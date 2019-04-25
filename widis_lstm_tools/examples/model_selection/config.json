@@ -1,0 +1,14 @@
+{
+  "device": "cpu",
+  "num_threads": 4,
+  "lr": 1e-2,
+  "batch_size": 8,
+  "n_lstm": 16,
+  "n_updates": 5e4,
+  "results_dir": "results",
+  "print_stats_at": 1e2,
+  "plot_at": 1e4,
+  "validate_at": 5e3,
+  "n_samples": 1e5,
+  "rnd_seed": 123
+}
