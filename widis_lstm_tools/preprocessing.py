@@ -158,7 +158,6 @@ class PadToEqualLengths(object):
         self.padding_values = padding_values
     
     def __pad_entries__(self, sequences: list, entry_ind: int):
-        
         # If entry index should not be padded, stack entries to a tensor or return list of entries if not possible
         if entry_ind >= len(self.padding_dims) or self.padding_dims[entry_ind] is None:
             try:
@@ -167,28 +166,33 @@ class PadToEqualLengths(object):
                 return sequences
         
         # Get lengths of sequences
-        seq_lens = np.array([sequence.shape[self.padding_dims[entry_ind]] for sequence in sequences], dtype=np.int64)
+        seq_lens = torch.from_numpy(np.array([sequence.shape[self.padding_dims[entry_ind]] for sequence in sequences],
+                                             dtype=np.int64))
         
         # Get maximum length and determine padded shape
-        max_seq_len = np.max(seq_lens)
+        max_seq_len = seq_lens.max()
         new_shape = [len(sequences)] + list(sequences[0].shape)
         new_shape[self.padding_dims[entry_ind] + 1] = max_seq_len
         
         # Pre-allocate padded array
+        try:
+            torch_dtype = torch.from_numpy(np.array([], dtype=sequences[0].dtype)).dtype
+            sequences = [torch.from_numpy(s) for s in sequences]
+        except TypeError:
+            torch_dtype = sequences[0].dtype
         if self.padding_values[entry_ind] == 0:
-            padded_sequence_batch = np.zeros(new_shape, dtype=sequences[0].dtype)
+            padded_sequence_batch = torch.zeros(new_shape, dtype=torch_dtype)
         elif self.padding_values[entry_ind] == 1:
-            padded_sequence_batch = np.ones(new_shape, dtype=sequences[0].dtype)
+            padded_sequence_batch = torch.ones(new_shape, dtype=torch_dtype)
         else:
-            padded_sequence_batch = np.full(new_shape, dtype=sequences[0].dtype,
-                                            fill_value=self.padding_values[entry_ind])
+            padded_sequence_batch = torch.full(new_shape, dtype=torch_dtype, fill_value=self.padding_values[entry_ind])
         
         # Put sequences into padded array
         for i, sl in enumerate(seq_lens):
             dim_offset = [slice(0, None) for _ in range(self.padding_dims[entry_ind])]
             padded_sequence_batch[(i, *dim_offset, slice(0, sl))] = sequences[i]
         
-        return torch.Tensor(padded_sequence_batch), seq_lens
+        return padded_sequence_batch, seq_lens
     
     def pad_collate_fn(self, batch_as_list: list):
         """Function to be passed to torch.utils.data.DataLoader as collate_fn
