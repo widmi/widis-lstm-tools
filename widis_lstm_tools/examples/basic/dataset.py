@@ -41,12 +41,12 @@ class RandomOrSigmoidal(Dataset):
         sequence = np.linspace(start=start_end[0], stop=start_end[1],
                                num=np.random.randint(low=self.min_seq_len, high=self.max_seq_len+1))
         np.sin(sequence, out=sequence)
-        return sequence[..., None]
+        return np.asarray(sequence[..., None], dtype=np.float32)
     
     def __make_random__(self):
         seq_len = np.random.randint(low=self.min_seq_len, high=self.max_seq_len+1)
         sequence = np.random.uniform(low=-1, high=1, size=(seq_len,))
-        return sequence[..., None]
+        return np.asarray(sequence[..., None], dtype=np.float32)
     
     def __len__(self):
         return self.n_samples
