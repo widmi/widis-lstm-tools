@@ -12,7 +12,7 @@ widis_lstm_tools.preprocessing.TriangularValueEncoding(), which will make LSTM l
 Input: Command line argument with path to config file 'config.json'.
 Output: Output files will be saved in the output folder specified in 'config.json'.
 
-Dataset: Dataset 'RandomOrSineEncoded' gives us sequences that need to be classified into random uniform signal or
+Dataset: Dataset 'RandomOrSigmoidalEncoded' gives us sequences that need to be classified into random uniform signal or
 sigmoidal signals.
 Sequences have different lengths, so we need to use widis_lstm_tools.preprocessing.PadToEqualLengths for padding.
 Values in sequences are encoded in 16 input features, so a sequence will have shape (seq_len, 16).
@@ -54,7 +54,7 @@ class Net(nn.Module):
             W_og=(False, nn.init.normal_,),  # output gate: weights to recurrent inputs (normal init)
             a_out=lambda x: x,  # LSTM output activation shall be identity function
             b_ig=lambda *args, **kwargs: nn.init.normal_(mean=-5, *args, **kwargs),  # neg. input gate bias for long seq
-            n_tickersteps=5  # Optionally let LSTM do computations after sequence end, using tickersteps/tinkersteps
+            n_tickersteps=5,  # Optionally let LSTM do computations after sequence end, using tickersteps/tinkersteps
         )
         
         # After the LSTM layer, we add a fully connected output layer
@@ -230,28 +230,28 @@ def main():
             if update >= config['n_updates']:
                 break
         
-        print('Finished Training! Starting evaluation on test set...')
-        
-        #
-        # Now we have finished training and stored the best model in 'checkpoint/best.tar.gzip' and want to see the
-        # performance of this best model on the test set
-        #
-        
-        # Load best model from newest RAM object
-        state = saver_loader.load_from_ram()
-        update, best_validation_loss, validation_bacc = (state['update'], state['best_validation_loss'],
-                                                         state['validation_bacc'])
-        
-        # Save model to file
-        saver_loader.save_to_file(filename='best.tar.gzip')
-        
-        # Calculate scores and loss on test set
-        print("  Calculating testset score...", end='')
-        test_bacc, test_loss = calc_score(scoring_dataloader=test_set_loader, scoring_dataset=test_set)
-        print(f" ...done! ({time.time()-validation_start_time})")
-        
-        # Print results
-        tprint(f"[test] u: {update:07d}; loss: {test_loss:8.7f}; bacc: {test_bacc:5.4f}")
+    print('Finished Training! Starting evaluation on test set...')
+    
+    #
+    # Now we have finished training and stored the best model in 'checkpoint/best.tar.gzip' and want to see the
+    # performance of this best model on the test set
+    #
+    
+    # Load best model from newest RAM object
+    state = saver_loader.load_from_ram()
+    update, best_validation_loss, validation_bacc = (state['update'], state['best_validation_loss'],
+                                                     state['validation_bacc'])
+    
+    # Save model to file
+    saver_loader.save_to_file(filename='best.tar.gzip')
+    
+    # Calculate scores and loss on test set
+    print("  Calculating testset score...", end='')
+    test_bacc, test_loss = calc_score(scoring_dataloader=test_set_loader, scoring_dataset=test_set)
+    print(f" ...done! ({time.time()-validation_start_time})")
+    
+    # Print results
+    tprint(f"[test] u: {update:07d}; loss: {test_loss:8.7f}; bacc: {test_bacc:5.4f}")
     
     print('Done!')
 

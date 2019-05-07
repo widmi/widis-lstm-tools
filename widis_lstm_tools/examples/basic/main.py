@@ -162,38 +162,38 @@ def main():
 
         print('Finished Training! Starting evaluation on test set...')
         
-        # Compute scores on testset
-        with torch.no_grad():
-            tp_sum = 0.
-            tn_sum = 0.
-            p_sum = 0.
-            loss = 0.
-            for testdata in testloader:
-                # Get samples
-                inputs, labels, _ = testdata
-                padded_sequences, seq_lens = inputs
-                padded_sequences, labels = padded_sequences.to(device), labels.long().to(device)
-                
-                # Get outputs for network
-                outputs = net(padded_sequences, seq_lens)
-                
-                # Add loss to mean loss over testset
-                loss += (mean_cross_entropy(outputs, labels) * (len(labels) / len(testset)))
-                
-                # Store sum of tp, tn, t for BACC calculation
-                labels = labels.float()
-                p_sum += labels.sum(dim=0)  # number of positive samples
-                predictions = (outputs[:, 1] > outputs[:, 0]).float()
-                tp_sum += (predictions * labels).sum()
-                tn_sum += ((1 - predictions) * (1 - labels)).sum()
+    # Compute scores on testset
+    with torch.no_grad():
+        tp_sum = 0.
+        tn_sum = 0.
+        p_sum = 0.
+        loss = 0.
+        for testdata in testloader:
+            # Get samples
+            inputs, labels, _ = testdata
+            padded_sequences, seq_lens = inputs
+            padded_sequences, labels = padded_sequences.to(device), labels.long().to(device)
             
-            # Compute balanced accuracy
-            n_sum = len(testset) - p_sum
-            bacc_score = bacc(tp=tp_sum, tn=tn_sum, p=p_sum, n=n_sum).cpu().item()
-            loss = loss.cpu().item()
+            # Get outputs for network
+            outputs = net(padded_sequences, seq_lens)
             
-            # Print results
-            tprint(f"[eval] u: {update:07d}; loss: {loss:8.7f}; bacc: {bacc_score:5.4f}")
+            # Add loss to mean loss over testset
+            loss += (mean_cross_entropy(outputs, labels) * (len(labels) / len(testset)))
+            
+            # Store sum of tp, tn, t for BACC calculation
+            labels = labels.float()
+            p_sum += labels.sum(dim=0)  # number of positive samples
+            predictions = (outputs[:, 1] > outputs[:, 0]).float()
+            tp_sum += (predictions * labels).sum()
+            tn_sum += ((1 - predictions) * (1 - labels)).sum()
+        
+        # Compute balanced accuracy
+        n_sum = len(testset) - p_sum
+        bacc_score = bacc(tp=tp_sum, tn=tn_sum, p=p_sum, n=n_sum).cpu().item()
+        loss = loss.cpu().item()
+        
+        # Print results
+        tprint(f"[eval] u: {update:07d}; loss: {loss:8.7f}; bacc: {bacc_score:5.4f}")
     
     print('Done!')
 
