@@ -13,8 +13,8 @@ setup(
     url="https://github.com/widmi/widis-lstm-tools",
     license="GPL-3.0",
     description=(
-        "Various tools for working with Long Short-Term Memory (LSTM)",
-        "networks and sequences in Pytorch",
+        "Various tools for working with Long Short-Term Memory (LSTM) "
+        "networks and sequences in Pytorch"
     ),
     long_description=readme,
     long_description_content_type="text/markdown",
