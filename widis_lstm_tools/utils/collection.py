@@ -32,6 +32,7 @@ def get_rec_attr(module, attrstr):
         module = getattr(module, attr)
     return module
 
+
 def close_all():
     """Try to flush and close all file handles"""
     global FILEHANDLES
