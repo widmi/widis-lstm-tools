@@ -27,3 +27,23 @@ def bacc(tp, tn, p, n):
     
     """
     return (tp / p + tn / n) / 2
+
+
+def f1_score(tp, fp, fn):
+    """F1 Score (https://en.wikipedia.org/wiki/Accuracy_and_precision#In_binary_classification)
+    
+    Parameters
+    ----------
+    tp
+        Number of true positive predictions
+    fp
+        Number of false positive predictions
+    fn
+        Number of false negative predictions
+    
+    Returns
+    ----------
+    F1 Score
+    
+    """
+    return 2 * tp / (2 * tp + fp + fn)

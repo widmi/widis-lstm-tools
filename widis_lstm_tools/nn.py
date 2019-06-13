@@ -20,10 +20,6 @@ import torch.jit as jit
 from matplotlib import pyplot as plt
 
 
-def nograd(t):
-    return t.detach()
-
-
 class LearningRateDecay(object):
     def __init__(self, max_n_updates: int, optimizer, original_lr: float, final_lr=1e-5):
         """Decay learning rate linearly between original_lr and final_lr over course of learning
@@ -68,67 +64,74 @@ class LearningRateDecay(object):
         return new_lr
 
 
-class LSTMLayer(nn.Module):
-    def __init__(self, in_features, out_features,
-                 W_ci=nn.init.normal_, W_ig=nn.init.normal_, W_og=nn.init.normal_, W_fg=False,
+class LSTMCell(jit.ScriptModule):
+    def __init__(self, n_fwd_features, n_lstm, n_rec_features=None,
+                 w_ci=nn.init.normal_, w_ig=nn.init.normal_, w_og=nn.init.normal_, w_fg=False,
                  b_ci=nn.init.normal_, b_ig=nn.init.normal_, b_og=nn.init.normal_, b_fg=False,
                  a_ci=torch.tanh, a_ig=torch.sigmoid, a_og=torch.sigmoid, a_fg=lambda x: x, a_out=torch.tanh,
-                 c_init=lambda t: nn.init.constant_(t, val=0).detach_(),
-                 h_init=lambda t: nn.init.constant_(t, val=0).detach_(),
-                 output_dropout_rate=0., return_all_seq_pos=False, n_tickersteps=0,
                  b_ci_tickers=nn.init.normal_, b_ig_tickers=nn.init.normal_, b_og_tickers=nn.init.normal_,
-                 b_fg_tickers=False, inputformat='NLC'):
-        """Flexible LSTM layer for different types of sequence predictions with inputs of shape
-        [samples, sequence positions, features] or [samples, features, sequence positions].
+                 b_fg_tickers=False, dtype: torch.dtype = torch.float32):
+        """Flexible LSTM cell supporting
+          - individual initialization of forward and recurrent LSTM weights and biases,
+          - disabling connections to gates or cell input (forward and/or recurrent) via initializers,
+          - individual activation functions for LSTM gates, cell input, and cell output,
+          - access to cell state, cell output, and gate activations,
+          - modification of recurrent inputs,
+          - PyTorch TorchScript optimization,
+          - ponder-/tickersteps with dedicated bias weights (https://arxiv.org/abs/1603.08983).
+        
+        Provides two functions to compute the next LSTM state:
+          - cell(fwd_inputs, rec_input, c_old)
+          - cell_tickersteps(rec_input, c_old)
+        with
+          - fwd_inputs of shape [samples, n_fwd_features],
+          - rec_input of shape [samples, n_rec_features], where n_rec_features defaults to n_lstm, and
+          - old cell state c_old of shape [samples, n_lstm].
+        
+        Abbreviations:
+         - ci = cell input,
+         - ig = input gate,
+         - og = output gate,
+         - fg = forget gate weights,
+         - out = cell output.
+        
+        Default: Forget gate disabled, other connections and biases enabled,
+        tanh cell input and cell output activation function,
+        sigmoid gate activation functions, nn.init.normal_ initializer for weights and biases.
         
         Parameters
         -------
-        in_features : int
-            Number of input features
-        out_features : int
-            Number of output features (=number of LSTM blocks)
-        W_ci, W_ig, W_og, W_fg : (list of) initializer functions or False
-            Initial values or initializers for cell input, input gate, output gate, and forget gate weights; Can be list
-            of 2 elements as [W_fwd, W_rec] to define different weight initializations for forward and recurrent
-            connections respectively; If single element, forward and recurrent connections will use the same
-            initializer/tensor; If set to False, connection will be cut;
-            Shape of weights is W_fwd: [n_inputs, n_outputs], W_rec: [in_features, out_features];
-        b_ci, b_ig, b_og, b_fg : initializer function or False
-            Initial values or initializers for bias for cell input, input gate, output gate, and forget gate;
+        n_fwd_features : int
+            Number of forward input features
+        n_lstm : int
+            Number of LSTM blocks
+        n_rec_features : int
+            Number of recurrent input features (=number of LSTM blocks if feeding the LSTM output back as recurrence).
+            Defaults to n_lstm.
+        w_ci, w_ig, w_og, w_fg : function or list of function or bool
+            Initializer function(s) for respective weights;
+            If 2-element list: Interpreted as [w_fwd, w_rec] to define different weight initializations for forward and
+            recurrent connections respectively;
+            If single element: forward and recurrent connections will use the same initializer function;
+            If False: connection will be cut (single element of 2-element tuple may be set to False as well);
+            Shape of weights will be w_fwd: [n_fwd_features, n_lstm], w_rec: [n_rec_features, n_lstm];
+        b_ci, b_ig, b_og, b_fg : function or bool
+            Initializer function for respective biases;
             If set to False, connection will be cut;
-        a_ci, a_ig, a_og, a_fg, a_out : torch function
-            Activation functions for cell input, input gate, output gate, forget gate, and LSTM output respectively;
-        c_init : initializer function
-            Initial values for cell states; Default: Zero and not trainable;
-        h_init : initializer function
-            Initial values for hidden states; Default: Zero and not trainable;
-        output_dropout : float or False
-            Dropout rate for LSTM output dropout (i.e. dropout of whole LSTM unit with rescaling of the remaining
-            units); This also effects the recurrent connections;
-        return_all_seq_pos : bool
-            True: Return output for all sequence positions (continuous prediction);
-            False: Only return output at last sequence position (single target prediction);
-        n_tickersteps : int or False
-            Number of ticker- or tinker-steps; n_tickersteps sequence positions without forward input will be added
-            at the end of the sequence; During tickersteps, additional bias units will be added to the LSTM input;
-            This allows the LSTM to perform computations after the sequence has ended;
-        b_ci_tickers, b_ig_tickers, b_og_tickers, b_fg_tickers : initializer function or False
-            Initializers for bias applied during ticker steps for cell input, input gate, output gate, and forget gate;
+        a_ci, a_ig, a_og, a_fg, a_out : function
+            Activation function for gate/cell input/cell output;
+        b_ci_tickers, b_ig_tickers, b_og_tickers, b_fg_tickers : function or bool
+            Initializer function for respective biases applied only during ticker steps;
             If set to False, connection will be cut;
-        inputformat : 'NCL' or 'NLC'
-            Input tensor format;
-            'NCL' -> (batchsize, channels, seq.length);
-            'NLC' -> (batchsize, seq.length, channels);
-        
+        dtype : torch.dtype
+            Datatype of input tensor and weights;
         """
-        super(LSTMLayer, self).__init__()
-        self.in_features = in_features
-        self.out_features = out_features
+        super(LSTMCell, self).__init__()
+        self.n_fwd_features = n_fwd_features
+        self.n_lstm = n_lstm
+        self.n_rec_features = n_rec_features if n_rec_features is not None else n_lstm
         self.lstm_inlets = ['ci', 'ig', 'og', 'fg']
-        self.n_tickersteps = n_tickersteps
-        self.output_dropout_rate = output_dropout_rate
-        self.return_all_seq_pos = return_all_seq_pos
-        self.inputformat = inputformat
+        self.dtype = dtype
         
         # Get activation functions
         self.a = OrderedDict(zip(self.lstm_inlets + ['out'], [a_ci, a_ig, a_og, a_fg, a_out]))
@@ -140,479 +143,22 @@ class LSTMLayer(nn.Module):
             except TypeError:
                 return w
         
-        self.W_fwd_init = OrderedDict(zip(self.lstm_inlets, [try_split_w(W, 0) for W in [W_ci, W_ig, W_og, W_fg]]))
-        self.W_rec_init = OrderedDict(zip(self.lstm_inlets, [try_split_w(W, 1) for W in [W_ci, W_ig, W_og, W_fg]]))
+        self.w_fwd_init = OrderedDict(zip(self.lstm_inlets, [try_split_w(w, 0) for w in [w_ci, w_ig, w_og, w_fg]]))
+        self.w_rec_init = OrderedDict(zip(self.lstm_inlets, [try_split_w(w, 1) for w in [w_ci, w_ig, w_og, w_fg]]))
         self.b_init = OrderedDict(zip(self.lstm_inlets, [b_ci, b_ig, b_og, b_fg]))
-        self.b_tickers_init = OrderedDict(
-            zip(self.lstm_inlets, [b_ci_tickers, b_ig_tickers, b_og_tickers, b_fg_tickers]))
-        self.c_init = c_init
-        self.h_init = h_init
-        
-        # Create parameters where needed and store them in dictionary for easier access
-        self.W_fwd = OrderedDict(zip(self.lstm_inlets,
-                                     [nn.Parameter(torch.FloatTensor(in_features, out_features))
-                                      if self.W_fwd_init[i] is not False else False for i in self.lstm_inlets]))
-        self.W_rec = OrderedDict(zip(self.lstm_inlets,
-                                     [nn.Parameter(torch.FloatTensor(out_features, out_features))
-                                      if self.W_rec_init[i] is not False else False for i in self.lstm_inlets]))
-        self.b = OrderedDict(zip(self.lstm_inlets,
-                                 [nn.Parameter(torch.FloatTensor(out_features))
-                                  if self.b_init[i] is not False else False for i in self.lstm_inlets]))
-        if self.n_tickersteps > 0:
-            self.b_tickers = OrderedDict(
-                zip(self.lstm_inlets, [nn.Parameter(torch.FloatTensor(out_features))
-                                       if self.b_tickers_init[i] is not False else False for i in self.lstm_inlets]))
-        else:
-            self.b_tickers = False
-        
-        # Register parameters with module
-        _ = [self.register_parameter('W_fwd_{}'.format(name), param) for name, param in self.W_fwd.items()
-             if param is not False]
-        _ = [self.register_parameter('W_rec_{}'.format(name), param) for name, param in self.W_rec.items()
-             if param is not False]
-        _ = [self.register_parameter('b_{}'.format(name), param) for name, param in self.b.items() if param
-             is not False]
-        if self.n_tickersteps > 0:
-            _ = [self.register_parameter('b_tickers_{}'.format(name), param) for name, param in self.b_tickers.items()
-                 if param is not False]
-        
-        self.c_first = nn.Parameter(torch.FloatTensor(out_features))
-        self.h_first = nn.Parameter(torch.FloatTensor(out_features))
-        
-        self.output_dropout_mask = None
-        
-        # Cell states and LSTM outputs at each timestep for each sample will be stored in a list
-        self.c = []
-        self.h = []
-        
-        # Activations of LSTM inlets at each timestep for each sample will be stored in a list
-        self.lstm_inlets_activations = OrderedDict(zip(self.lstm_inlets, [[], [], [], []]))
-        
-        # Initialize tensors
-        self.reset_parameters()
-        
-        # This will optionally hold the true sequence lengths (before padding) for plotting
-        self.true_seq_lens = None
-        
-        # This will hold the input sequences for plotting
-        self.x = None
-    
-    def reset_parameters(self):
-        
-        # Apply initializer for W, b, and b_tickersteps
-        _ = [self.W_fwd_init[i](self.W_fwd[i]) for i in self.lstm_inlets if self.W_fwd_init[i] is not False]
-        _ = [self.W_rec_init[i](self.W_rec[i]) for i in self.lstm_inlets if self.W_rec_init[i] is not False]
-        _ = [self.b_init[i](self.b[i]) for i in self.lstm_inlets if self.b_init[i] is not False]
-        
-        if self.n_tickersteps > 0:
-            _ = [self.b_tickers_init[i](self.b_tickers[i]) for i in self.lstm_inlets
-                 if self.b_tickers_init[i] is not False]
-        
-        # Initialize cell state and LSTM output at timestep -1
-        self.c_init(self.c_first)
-        self.h_init(self.h_first)
-        
-        # Manage LSTM output dropout (constant dropout of same units over time, including initial h state)
-        if self.output_dropout_rate > 0:
-            raise NotImplementedError("Sorry, LSTM output_dropout not available yet")
-            self.output_dropout_mask = nograd(nn.init.uniform(nn.Parameter(torch.zeros_like(self.c_first),
-                                                                           low=0, high=1)))
-            self.a['out_dropout'] = lambda t: torch.where(self.output_dropout_mask > self.output_dropout_rate,
-                                                          t, nograd(t * 0))
-            self.h_first = self.a['out_dropout'](self.h_first)
-    
-    def reset_lstm_internals(self, n_batches):
-        # Cell states and LSTM outputs at each timestep for each sample will be stored in a list
-        self.c = [self.c_first.repeat((n_batches, 1))]
-        self.h = [self.h_first.repeat((n_batches, 1))]
-        
-        # Activations of LSTM inlets at each timestep for each sample will be stored in a list
-        self.lstm_inlets_activations = OrderedDict(zip(self.lstm_inlets, [[], [], [], []]))
-        
-        # Sample new output dropout mask
-        if self.output_dropout_rate > 0:
-            raise NotImplementedError("Sorry, LSTM output_dropout not available yet")
-    
-    def make_net_act(self, net_fwd, net_rec, b, a, n_samples, b_ticker=False):
-        net_act = None
-        if net_fwd is not False:
-            net_act = net_fwd
-        if net_rec is not False:
-            if net_act is not None:
-                net_act += net_rec
-            else:
-                net_act = net_rec
-        if b is not False:
-            if net_act is not None:
-                net_act += b[None, :]
-            else:
-                net_act = b[None, :].repeat((n_samples, 1))
-        if b_ticker is not False:
-            if net_act is not None:
-                net_act += b_ticker[None, :]
-            else:
-                net_act = b_ticker[None, :].repeat((n_samples, 1))
-        if net_act is not None:
-            net_act = a(net_act)
-        else:
-            net_act = 1
-        return net_act
-     
-    def forward(self, x, true_seq_lens=None):
-        """ Compute LSTM forward pass
-        
-        Compute LSTM forward pass.
-        If using tickersteps and true_seq_lens, the tickerstep activations are appended at the end of the padded
-        sequences. This also holds for the LSTM internals and the cellstate. However, the tickerstep activations are
-        correctly computed beginning with the last activation at the true sequence length.
-        
-        Parameters
-        ----------
-        x: tensor
-            Input tensor of shape (samples, length, channels) if NLC or (samples, channels, length) if NCL
-        true_seq_lens: list or array of int
-            Optional: True sequence lengths of padded sequences
-            
-        Returns
-        --------
-        h_out: tensor
-            return_all_seq_pos == True: Output of LSTM for all (possibly padded) sequence positions in shape NLC or NCL.
-            Tickerstep activations are appended at the end of the padded sequences if true_seq_lens is provided.
-            return_all_seq_pos == False: Output of LSTM at last sequence position (after tickersteps) in shape NC.
-        h: list of tensor
-            List of LSTM outputs for every sequence position in shape list(NC)
-        c: list of tensor
-            List of LSTM cell states for every sequence position in shape list(NC)
-        lstm_inlets_activations: OrderedDict of list of tensor
-            OrderedDict of lists of internal LSTM states for every sequence position in shape list(NC) with keys
-            ['ci', 'ig', 'og', 'fg'], representing cell input, input gate, output gate, and forget gate respectively.
-        """
-        self.true_seq_lens = true_seq_lens
-        self.x = x
-        
-        if self.inputformat == 'NLC':
-            n_batches, n_seqpos, n_features = x.shape
-            seqpos_slice = lambda seqpos: [slice(None), seqpos]
-        elif self.inputformat == 'NCL':
-            n_batches, n_features, n_seqpos = x.shape
-            seqpos_slice = lambda seqpos: [slice(None), slice(None), seqpos]
-        else:
-            raise ValueError("Input format {} not supported".format(self.inputformat))
-        
-        self.reset_lstm_internals(n_batches=n_batches)
-        
-        #
-        # Calculate activations for every sequence position
-        #
-        for seq_pos in range(n_seqpos):
-            # Calculate activations for LSTM inlets and append them to self.lstm_inlets_activations
-            net_fwds = [torch.mm(x[seqpos_slice(seq_pos)], self.W_fwd[inlet]) if self.W_fwd[inlet] is not False
-                        else False for inlet in self.lstm_inlets]
-            net_fwds = OrderedDict(zip(self.lstm_inlets, net_fwds))
-            net_recs = [torch.mm(self.h[-1], self.W_rec[inlet]) if self.W_rec[inlet] is not False
-                        else False for inlet in self.lstm_inlets]
-            net_recs = OrderedDict(zip(self.lstm_inlets, net_recs))
-            
-            net_acts = [self.make_net_act(net_fwds[inlet], net_recs[inlet], self.b[inlet], self.a[inlet], x.shape[0])
-                        for inlet in self.lstm_inlets]
-            _ = [self.lstm_inlets_activations[inlet].append(net_acts[i]) for i, inlet in enumerate(self.lstm_inlets)]
-            
-            # Calculate new cell state
-            self.c.append(self.lstm_inlets_activations['ci'][-1] * self.lstm_inlets_activations['ig'][-1]
-                          + self.c[-1] * self.lstm_inlets_activations['fg'][-1])
-            
-            # Calculate new LSTM output with new cell state
-            if self.output_dropout_rate > 0:
-                self.h.append(self.a['out_dropout'](self.a['out'](self.c[-1])) * self.lstm_inlets_activations['og'][-1])
-            else:
-                self.h.append(self.a['out'](self.c[-1]) * self.lstm_inlets_activations['og'][-1])
-        
-        #
-        # Get LSTM output at sequence end, considering true_seq_len
-        #
-        if true_seq_lens is None:
-            last_h = self.h[-1]
-        else:
-            last_h = torch.stack([self.h[tsl][sample_i] for sample_i, tsl in enumerate(true_seq_lens)], dim=0)
-        
-        #
-        # Handle tickersteps
-        #
-        if self.n_tickersteps:
-            #
-            # Set input for tickersteps and consider true_seq_len
-            #
-            if true_seq_lens is None:
-                ticker_h = [last_h]
-                ticker_c = [self.c[-1]]
-                ticker_lstm_inlets_activations = OrderedDict([(inlet, []) for inlet in self.lstm_inlets])
-            else:
-                ticker_h = [last_h]
-                ticker_c = [torch.stack([self.c[tsl][sample_i] for sample_i, tsl in enumerate(true_seq_lens)], dim=0)]
-                ticker_lstm_inlets_activations = OrderedDict([(inlet, []) for inlet in self.lstm_inlets])
-            
-            #
-            # Calculate tickerstep activations
-            #
-            for _ in range(self.n_tickersteps):
-                # Calculate activations for LSTM inlets and append them to ticker_lstm_inlets_activations, but during
-                # tickersteps add tickerstep biases and set net_fwd to False
-                net_recs = [torch.mm(ticker_h[-1], self.W_rec[inlet]) if self.W_rec[inlet] is not False
-                            else False for inlet in self.lstm_inlets]
-                net_recs = OrderedDict(zip(self.lstm_inlets, net_recs))
-                net_acts = [self.make_net_act(False, net_recs[inlet], self.b[inlet], self.a[inlet], x.shape[0],
-                                              self.b_tickers[inlet])
-                            for inlet in self.lstm_inlets]
-                _ = [ticker_lstm_inlets_activations[inlet].append(net_acts[i])
-                     for i, inlet in enumerate(self.lstm_inlets)]
-                
-                # Calculate new cell state
-                ticker_c.append(ticker_lstm_inlets_activations['ci'][-1] * ticker_lstm_inlets_activations['ig'][-1]
-                                + ticker_c[-1] * ticker_lstm_inlets_activations['fg'][-1])
-                
-                # Calculate new LSTM output with new cell state
-                if self.output_dropout_rate > 0:
-                    ticker_h.append(self.a['out_dropout'](self.a['out'](ticker_c[-1]))
-                                    * ticker_lstm_inlets_activations['og'][-1])
-                else:
-                    ticker_h.append(self.a['out'](ticker_c[-1]) * ticker_lstm_inlets_activations['og'][-1])
-            
-            # Remove initial step, as it is already in pre-tickerstep activations
-            ticker_h = ticker_h[1:]
-            ticker_c = ticker_c[1:]
-            
-            # Append tickerstep activations to end of (possibly padded) sequences
-            self.h += ticker_h
-            self.c += ticker_c
-            _ = [self.lstm_inlets_activations[inlet].extend(ticker_lstm_inlets_activations[inlet])
-                 for inlet in self.lstm_inlets]
-            
-            # Set output after tickersteps as new final output
-            last_h = ticker_h[-1]
-        
-        #
-        # Finalize output of LSTM
-        #
-        if self.return_all_seq_pos:
-            # Output is LSTM output at each position
-            if self.inputformat == 'NLC':
-                h_out = torch.stack(self.h[1:], 1)
-            elif self.inputformat == 'NCL':
-                h_out = torch.stack(self.h[1:], 2)
-            else:
-                raise ValueError("Input format {} not supported".format(self.inputformat))
-        else:
-            # Output is LSTM output at last (existing) position
-            h_out = last_h
-        
-        return h_out, self.h, self.c, self.lstm_inlets_activations
-    
-    def get_weights(self):
-        """Return dictionaries for W_fwd and W_rec"""
-        return self.W_fwd, self.W_rec
-    
-    def get_biases(self):
-        """Return dictionaries for with biases and """
-        return self.b
-    
-    def tensor_to_numpy(self, t):
-        try:
-            t = t.numpy()
-        except TypeError:
-            t = t.cpu().numpy()
-        except AttributeError:
-            t = np.as_array(t)
-        except RuntimeError:
-            t = t.clone().data.cpu().numpy()
-        return t
-    
-    def plot_internals(self, mb_index: int = 0, filename: str = None, show_plot: bool = False, fdict: dict = None,
-                       verbose=True):
-        """Plot LSTM output, LSTM internal states, and LSTM input
-        
-        Plots LSTM input, LSTM output (h), LSTM cell state (c), LSTM gate activations, and LSTM cell input in separated
-        axes. Each plot contains activations for all LSTM blocks (line colors identify individual LSTM units).
-        
-        Parameters
-        ----------
-        mb_index: int
-            Index of sample to plot (index in minibatch)
-        filename: str
-            If specified, plot will be saved at location specified by filename. Necessary path will be created
-            automatically.
-        show_plot: bool
-            True: Display plot
-            False: Do not display plot
-        fdict: dict
-            kwargs passed to matplotlib.pyplot.subplots() function
-        """
-        if filename is not None:
-            os.makedirs(os.path.dirname(filename), exist_ok=True)
-        
-        if verbose:
-            print(f"  Plotting LSTM states...", end='')
-            start_time = time.time()
-        
-        #
-        # Get sample activations at mb_index
-        #
-        lstm_internals_copy = OrderedDict([(k, self.tensor_to_numpy(torch.stack([t[mb_index] for t in v], 0)))
-                                           for k, v in self.lstm_inlets_activations.items() if v[0] is not 1])
-        lstm_internals_copy['c'] = self.tensor_to_numpy(torch.stack([t[mb_index] for t in self.c], 0))
-        lstm_internals_copy['h'] = self.tensor_to_numpy(torch.stack([t[mb_index] for t in self.h], 0))
-        lstm_internals_copy['input'] = self.tensor_to_numpy(self.x[mb_index])
-        
-        #
-        # Remove activations between last true sequence position and start of tickersteps
-        #
-        if self.true_seq_lens is not None:
-            true_seq_len = self.true_seq_lens[mb_index]
-            for key in lstm_internals_copy.keys():
-                if key == 'c' or key == 'h':
-                    tsl = true_seq_len + 1
-                else:
-                    tsl = true_seq_len
-                if key == 'input':
-                    lstm_internals_copy[key] = lstm_internals_copy[key][:tsl]
-                else:
-                    lstm_internals_copy[key] = np.concatenate((lstm_internals_copy[key][:tsl],
-                                                               lstm_internals_copy[key][-self.n_tickersteps:]), axis=0)
-        
-        plot_labels = [a for z in zip_longest(['input', 'h', 'c'], self.lstm_inlets) for a in z]
-        max_len = max([v.shape[0] for v in lstm_internals_copy.values()])
-
-        #
-        # Do plotting: 1 axis per LSTM internal
-        #
-        if fdict is None:
-            fdict = dict()
-        # plt.rcParams.update({'font.size': 5})
-        fig, axes = plt.subplots(4, 2, **fdict)
-        axes = [a for aa in axes for a in aa]
-        plt.tight_layout()
-        for i, ax in enumerate(axes):
-            try:
-                label = plot_labels[i]
-            except IndexError:
-                ax.axis('off')
-                continue
-            ax.set_title(label)
-            if label not in lstm_internals_copy.keys():
-                continue
-            
-            _ = ax.plot(lstm_internals_copy[label], label=label)
-            ax.set_xlim(left=0, right=max_len)
-            ax.grid(True)
-        
-        if filename is not None:
-            fig.savefig(filename)
-        
-        if show_plot:
-            fig.show()
-        else:
-            plt.close(fig)
-            del fig
-        
-        if verbose:
-            print(f"    ...done! ({time.time() - start_time:8.7f}sec)")
-
-
-class LSTMLayerOptimized(jit.ScriptModule):
-    def __init__(self, in_features, out_features,
-                 W_ci=nn.init.normal_, W_ig=nn.init.normal_, W_og=nn.init.normal_, W_fg=False,
-                 b_ci=nn.init.normal_, b_ig=nn.init.normal_, b_og=nn.init.normal_, b_fg=False,
-                 a_ci=torch.tanh, a_ig=torch.sigmoid, a_og=torch.sigmoid, a_fg=lambda x: x, a_out=torch.tanh,
-                 c_init=lambda t: nn.init.constant_(t, val=0).detach_(),
-                 h_init=lambda t: nn.init.constant_(t, val=0).detach_(),
-                 output_dropout_rate=0., return_all_seq_pos=False, n_tickersteps=0,
-                 b_ci_tickers=nn.init.normal_, b_ig_tickers=nn.init.normal_, b_og_tickers=nn.init.normal_,
-                 b_fg_tickers=False, inputformat='NLC'):
-        """Optimized version of flexible LSTM layer for different types of sequence predictions with inputs of shape
-        [samples, sequence positions, features] or [samples, features, sequence positions].
-        WARNING: Faster but untested, use at your own risk - also the code is convoluted a.f. ;)
-
-        Parameters
-        -------
-        in_features : int
-            Number of input features
-        out_features : int
-            Number of output features (=number of LSTM blocks)
-        W_ci, W_ig, W_og, W_fg : (list of) initializer functions or False
-            Initial values or initializers for cell input, input gate, output gate, and forget gate weights; Can be list
-            of 2 elements as [W_fwd, W_rec] to define different weight initializations for forward and recurrent
-            connections respectively; If single element, forward and recurrent connections will use the same
-            initializer/tensor; If set to False, connection will be cut;
-            Shape of weights is W_fwd: [n_inputs, n_outputs], W_rec: [in_features, out_features];
-        b_ci, b_ig, b_og, b_fg : initializer function or False
-            Initial values or initializers for bias for cell input, input gate, output gate, and forget gate;
-            If set to False, connection will be cut;
-        a_ci, a_ig, a_og, a_fg, a_out : torch function
-            Activation functions for cell input, input gate, output gate, forget gate, and LSTM output respectively;
-        c_init : initializer function
-            Initial values for cell states; Default: Zero and not trainable;
-        h_init : initializer function
-            Initial values for hidden states; Default: Zero and not trainable;
-        output_dropout : float or False
-            Dropout rate for LSTM output dropout (i.e. dropout of whole LSTM unit with rescaling of the remaining
-            units); This also effects the recurrent connections;
-        return_all_seq_pos : bool
-            True: Return output for all sequence positions (continuous prediction);
-            False: Only return output at last sequence position (single target prediction);
-        n_tickersteps : int or False
-            Number of ticker- or tinker-steps; n_tickersteps sequence positions without forward input will be added
-            at the end of the sequence; During tickersteps, additional bias units will be added to the LSTM input;
-            This allows the LSTM to perform computations after the sequence has ended;
-        b_ci_tickers, b_ig_tickers, b_og_tickers, b_fg_tickers : initializer function or False
-            Initializers for bias applied during ticker steps for cell input, input gate, output gate, and forget gate;
-            If set to False, connection will be cut;
-        inputformat : 'NCL' or 'NLC'
-            Input tensor format;
-            'NCL' -> (batchsize, channels, seq.length);
-            'NLC' -> (batchsize, seq.length, channels);
-        """
-        super(LSTMLayerOptimized, self).__init__()
-        self.in_features = in_features
-        self.out_features = out_features
-        self.lstm_inlets = ['ci', 'ig', 'og', 'fg']
-        self.n_tickersteps = n_tickersteps
-        self.output_dropout_rate = output_dropout_rate
-        self.return_all_seq_pos = return_all_seq_pos
-        self.inputformat = inputformat
-        
-        # Check for valid input format
-        if self.inputformat != 'NLC' and self.inputformat != 'NCL':
-            raise ValueError("Input format {} not supported".format(self.inputformat))
-        
-        # Get activation functions
-        self.a = OrderedDict(zip(self.lstm_inlets + ['out'], [a_ci, a_ig, a_og, a_fg, a_out]))
-        
-        # Get initializer for tensors
-        def try_split_w(w, i):
-            try:
-                return w[i]
-            except TypeError:
-                return w
-        
-        self.W_fwd_init = OrderedDict(zip(self.lstm_inlets, [try_split_w(W, 0) for W in [W_ci, W_ig, W_og, W_fg]]))
-        self.W_rec_init = OrderedDict(zip(self.lstm_inlets, [try_split_w(W, 1) for W in [W_ci, W_ig, W_og, W_fg]]))
-        self.b_init = OrderedDict(zip(self.lstm_inlets, [b_ci, b_ig, b_og, b_fg]))
-        if self.n_tickersteps > 0:
-            self.b_tickers_init = OrderedDict(
-                zip(self.lstm_inlets, [b_ci_tickers, b_ig_tickers, b_og_tickers, b_fg_tickers]))
-        else:
-            self.b_tickers_init = OrderedDict(zip(self.lstm_inlets, [False, False, False, False]))
-        self.c_init = c_init
-        self.h_init = h_init
+        self.b_tickers_init = OrderedDict(zip(self.lstm_inlets,
+                                              [b_ci_tickers, b_ig_tickers, b_og_tickers, b_fg_tickers]))
         
         # Create tensor for concatenated weights and biases (only for active connections)
-        n_active_fwds = len([1 for i in self.lstm_inlets if self.W_fwd_init[i] is not False])
-        self.W_fwd_cat = nn.Parameter(torch.zeros((in_features, out_features * n_active_fwds), dtype=torch.float32))
-        n_active_recs = len([1 for i in self.lstm_inlets if self.W_rec_init[i] is not False])
-        self.W_rec_cat = nn.Parameter(torch.zeros((out_features, out_features * n_active_recs), dtype=torch.float32))
+        n_active_fwds = len([1 for i in self.lstm_inlets if self.w_fwd_init[i] is not False])
+        self.w_fwd_cat = nn.Parameter(torch.zeros((n_fwd_features, n_lstm * n_active_fwds), dtype=dtype))
+        n_active_recs = len([1 for i in self.lstm_inlets if self.w_rec_init[i] is not False])
+        self.w_rec_cat = nn.Parameter(torch.zeros((self.n_rec_features, n_lstm * n_active_recs),
+                                                  dtype=dtype))
         n_active_b = len([1 for i in self.lstm_inlets if self.b_init[i] is not False])
-        self.b_cat = nn.Parameter(torch.zeros((out_features * n_active_b,), dtype=torch.float32))
+        self.b_cat = nn.Parameter(torch.zeros((n_lstm * n_active_b,), dtype=dtype))
         n_active_b_tickers = len([1 for i in self.lstm_inlets if self.b_tickers_init[i] is not False])
-        self.b_tickers_cat = nn.Parameter(torch.zeros((out_features * n_active_b_tickers,), dtype=torch.float32))
+        self.b_tickers_cat = nn.Parameter(torch.zeros((n_lstm * n_active_b_tickers,), dtype=dtype))
         
         # Create a dict with inlet indices in concatenated weights, inactive connections will have empty arrays
         self.__fwd_cat_inds__ = OrderedDict()
@@ -620,29 +166,29 @@ class LSTMLayerOptimized(jit.ScriptModule):
         self.__b_cat_inds__ = OrderedDict()
         self.__b_tickers_cat_inds__ = OrderedDict()
         for inlet in self.lstm_inlets:
-            if self.W_fwd_init[inlet] is not False:
-                self.__fwd_cat_inds__[inlet] = [len(self.__fwd_cat_inds__) * out_features,
-                                                (len(self.__fwd_cat_inds__) + 1) * out_features]
-            
-            if self.W_rec_init[inlet] is not False:
-                self.__rec_cat_inds__[inlet] = [len(self.__rec_cat_inds__) * out_features,
-                                                (len(self.__rec_cat_inds__) + 1) * out_features]
-            
+            if self.w_fwd_init[inlet] is not False:
+                self.__fwd_cat_inds__[inlet] = [len(self.__fwd_cat_inds__) * n_lstm,
+                                                (len(self.__fwd_cat_inds__) + 1) * n_lstm]
+
+            if self.w_rec_init[inlet] is not False:
+                self.__rec_cat_inds__[inlet] = [len(self.__rec_cat_inds__) * n_lstm,
+                                                (len(self.__rec_cat_inds__) + 1) * n_lstm]
+
             if self.b_init[inlet] is not False:
-                self.__b_cat_inds__[inlet] = [len(self.__b_cat_inds__) * out_features,
-                                              (len(self.__b_cat_inds__) + 1) * out_features]
-            
+                self.__b_cat_inds__[inlet] = [len(self.__b_cat_inds__) * n_lstm,
+                                              (len(self.__b_cat_inds__) + 1) * n_lstm]
+
             if self.b_tickers_init[inlet] is not False:
-                self.__b_tickers_cat_inds__[inlet] = [len(self.__b_tickers_cat_inds__) * out_features,
-                                                      (len(self.__b_tickers_cat_inds__) + 1) * out_features]
+                self.__b_tickers_cat_inds__[inlet] = [len(self.__b_tickers_cat_inds__) * n_lstm,
+                                                      (len(self.__b_tickers_cat_inds__) + 1) * n_lstm]
         
         # Create views on concatenated weights for all inlets, inactive connections will have empty arrays
-        self.W_fwd = OrderedDict(zip(self.lstm_inlets,
-                                     [self.W_fwd_cat[:, self.__fwd_cat_inds__[i][0]:self.__fwd_cat_inds__[i][1]]
+        self.w_fwd = OrderedDict(zip(self.lstm_inlets,
+                                     [self.w_fwd_cat[:, self.__fwd_cat_inds__[i][0]:self.__fwd_cat_inds__[i][1]]
                                       if i in self.__fwd_cat_inds__ else False
                                       for i in self.lstm_inlets]))
-        self.W_rec = OrderedDict(zip(self.lstm_inlets,
-                                     [self.W_rec_cat[:, self.__rec_cat_inds__[i][0]:self.__rec_cat_inds__[i][1]]
+        self.w_rec = OrderedDict(zip(self.lstm_inlets,
+                                     [self.w_rec_cat[:, self.__rec_cat_inds__[i][0]:self.__rec_cat_inds__[i][1]]
                                       if i in self.__rec_cat_inds__ else False
                                       for i in self.lstm_inlets]))
         self.b = OrderedDict(zip(self.lstm_inlets,
@@ -655,73 +201,93 @@ class LSTMLayerOptimized(jit.ScriptModule):
                  if i in self.__b_tickers_cat_inds__ else False
                  for i in self.lstm_inlets]))
         
-        self.c_first = nn.Parameter(torch.FloatTensor(out_features))
-        self.h_first = nn.Parameter(torch.FloatTensor(out_features))
-        
-        self.output_dropout_mask = None
-        
-        # Cell states and LSTM outputs at each timestep for each sample will be stored in a list
-        self.c = []
-        self.h = []
-        
         # Activations of LSTM inlets at each timestep for each sample will be stored in a list
         self.lstm_inlets_activations = OrderedDict(zip(self.lstm_inlets, [[], [], [], []]))
         
         # Initialize tensors
-        self.reset_parameters()
+        self.__reset_parameters__()
+
+        dummy_fwd_inputs = torch.empty(size=(1, self.n_fwd_features), dtype=dtype)
+        dummy_rec_input = torch.empty(size=(1, self.n_rec_features), dtype=dtype)
+        dummy_c = torch.empty(size=(1, self.n_lstm), dtype=dtype)
+
+        self.__traced_cell__ = torch.jit.trace(self.__cell_python__, (dummy_fwd_inputs, dummy_rec_input, dummy_c,
+                                                                      self.w_fwd_cat, self.w_rec_cat, self.b_cat),
+                                               check_trace=False)
+        self.__traced_cell_tickersteps__ = torch.jit.trace(self.__cell_tickersteps_python__,
+                                                           (dummy_rec_input, dummy_c,
+                                                            self.w_rec_cat, self.b_cat, self.b_tickers_cat),
+                                                           check_trace=False)
+
+    @torch.jit.script_method
+    def cell(self, fwd_inputs, rec_input, c_old):
+        """Compute the next LSTM state given
         
-        # This will optionally hold the true sequence lengths (before padding) for plotting
-        self.true_seq_lens = None
+        fwd_inputs of shape [samples, n_fwd_features],
         
-        # This will hold the input sequences for plotting
-        self.x = None
+        rec_input of shape [samples, n_rec_features], where n_rec_features defaults to n_lstm, and
         
-        self.__traced_cell__ = None
-        self.__traced_cell_tickersteps__ = None
-        self.__apply_cell_traced__ = None
-        self.__apply_cell_tickersteps_traced__ = None
+        old cell state c_old of shape [samples, n_lstm].
+        
+        Parameters
+        -------
+        fwd_inputs : torch.Tensor
+            Forward inputs of shape [samples, n_fwd_features]
+        rec_input : torch.Tensor
+            Recurrent inputs of shape [samples, n_rec_features], where n_rec_features defaults to n_lstm
+        c_old : torch.Tensor
+            Old cell state of shape [samples, n_lstm]
+
+        Returns
+        -------
+        lstm_states : tuple of torch.Tensor
+            6-element tuple of torch.Tensor elements of shape [samples, n_lstm].
+            Contains cell state, cell output, cell input, input gate, output gate, and forget gate activations.
+        """
+        return self.__traced_cell__(fwd_inputs, rec_input, c_old, self.w_fwd_cat, self.w_rec_cat, self.b_cat)
     
-    def reset_parameters(self):
+    @torch.jit.script_method
+    def cell_tickersteps(self, rec_input, c_old):
+        """Compute the next LSTM state during ticker (https://arxiv.org/abs/1603.08983) steps given
+        
+        rec_input of shape [samples, n_rec_features], where n_rec_features defaults to n_lstm and
+        
+        old cell state c_old of shape [samples, n_lstm].
+        
+        During tickersteps, forward input is set to 0 and b_ci_tickers, b_ig_tickers, b_og_tickers, b_fg_tickers are
+        activated.
+        
+        Parameters
+        -------
+        rec_input : torch.Tensor
+            Recurrent inputs of shape [samples, n_rec_features], where n_rec_features defaults to n_lstm
+        c_old : torch.Tensor
+            Old cell state of shape [samples, n_lstm]
+
+        Returns
+        -------
+        lstm_states : (torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor)
+            6-element tuple of torch.Tensor elements of shape [samples, n_lstm].
+            Contains cell state, cell output, cell input, input gate, output gate, and forget gate activations.
+        """
+        return self.__traced_cell_tickersteps__(rec_input, c_old, self.w_rec_cat, self.b_cat, self.b_tickers_cat)
+
+    def __reset_parameters__(self):
+        """ Reset trainable LSTM cell parameters to initial values """
         # Apply initializer for W, b, and b_tickersteps
-        _ = [self.W_fwd_init[i](self.W_fwd[i]) for i in self.lstm_inlets if self.W_fwd_init[i] is not False]
-        _ = [self.W_rec_init[i](self.W_rec[i]) for i in self.lstm_inlets if self.W_rec_init[i] is not False]
+        _ = [self.w_fwd_init[i](self.w_fwd[i]) for i in self.lstm_inlets if self.w_fwd_init[i] is not False]
+        _ = [self.w_rec_init[i](self.w_rec[i]) for i in self.lstm_inlets if self.w_rec_init[i] is not False]
         _ = [self.b_init[i](self.b[i]) for i in self.lstm_inlets if self.b_init[i] is not False]
-        
-        if self.n_tickersteps > 0:
-            _ = [self.b_tickers_init[i](self.b_tickers[i]) for i in self.lstm_inlets
-                 if self.b_tickers_init[i] is not False]
-        
-        # Initialize cell state and LSTM output at timestep -1
-        self.c_init(self.c_first)
-        self.h_init(self.h_first)
-        
-        # Manage LSTM output dropout (constant dropout of same units over time, including initial h state)
-        if self.output_dropout_rate > 0:
-            raise NotImplementedError("Sorry, LSTM output_dropout not available yet")
-            self.output_dropout_mask = nograd(nn.init.uniform(nn.Parameter(torch.zeros_like(self.c_first),
-                                                                           low=0, high=1)))
-            self.a['out_dropout'] = lambda t: torch.where(self.output_dropout_mask > self.output_dropout_rate,
-                                                          t, nograd(t * 0))
-            self.h_first = self.a['out_dropout'](self.h_first)
     
-    def reset_lstm_internals(self, n_samples):
-        # Cell states and LSTM outputs at each timestep for each sample will be stored in a list
-        self.c = [self.c_first.repeat((n_samples, 1))]
-        self.h = [self.h_first.repeat((n_samples, 1))]
-        
-        # Activations of LSTM inlets at each timestep for each sample will be stored in a list
-        self.lstm_inlets_activations = OrderedDict(zip(self.lstm_inlets, [[], [], [], []]))
-        
-        # Sample new output dropout mask
-        if self.output_dropout_rate > 0:
-            raise NotImplementedError("Sorry, LSTM output_dropout not available yet")
-    
-    def __cell_python__(self, fwd_input, rec_input, c_old, W_fwd_cat, W_rec_cat, b):
-        
+        _ = [self.b_tickers_init[i](self.b_tickers[i]) for i in self.lstm_inlets
+             if self.b_tickers_init[i] is not False]
+
+    def __cell_python__(self, fwd_input, rec_input, c_old, w_fwd_cat, w_rec_cat, b):
+        """Template for self.cell() before torch.jit.trace()"""
         # Compute activations for concatenated weights and split them to inlets
-        net_fwds_cat = torch.mm(fwd_input, W_fwd_cat)
-        net_recs_cat = torch.mm(rec_input, W_rec_cat)
-        
+        net_fwds_cat = torch.mm(fwd_input, w_fwd_cat)
+        net_recs_cat = torch.mm(rec_input, w_rec_cat)
+
         acts = OrderedDict()
         for inlet in self.lstm_inlets:
             acts[inlet] = False
@@ -731,221 +297,353 @@ class LSTMLayerOptimized(jit.ScriptModule):
                 else:
                     acts[inlet] = acts[inlet] + net_fwds_cat[:, self.__fwd_cat_inds__[inlet][0]:
                                                                 self.__fwd_cat_inds__[inlet][1]]
-            
+
             if inlet in self.__rec_cat_inds__:
                 if acts[inlet] is False:
                     acts[inlet] = net_recs_cat[:, self.__rec_cat_inds__[inlet][0]:self.__rec_cat_inds__[inlet][1]]
                 else:
                     acts[inlet] = acts[inlet] + net_recs_cat[:, self.__rec_cat_inds__[inlet][0]:
                                                                 self.__rec_cat_inds__[inlet][1]]
-            
+
             if inlet in self.__b_cat_inds__:
                 if acts[inlet] is False:
                     acts[inlet] = b[None, self.__b_cat_inds__[inlet][0]:
                                           self.__b_cat_inds__[inlet][1]].repeat((fwd_input.shape[0], 1))
                 else:
                     acts[inlet] = acts[inlet] + b[None, self.__b_cat_inds__[inlet][0]:self.__b_cat_inds__[inlet][1]]
-            
+
             if acts[inlet] is False:
-                acts[inlet] = torch.FloatTensor([1.]).to(device=c_old.device).detach()
+                acts[inlet] = False
             else:
                 acts[inlet] = self.a[inlet](acts[inlet])
-        
+
         # Calculate new cell state
-        c = acts['ci'] * acts['ig'] + c_old * acts['fg']
-        
+        c = c_old
+        if acts['fg'] is not False:
+            c = c * acts['fg']
+        if acts['ci'] is not False and acts['ig'] is not False:
+            c = c + acts['ci'] * acts['ig']
+        elif acts['ci'] is not False:
+            c = c + acts['ci']
+        elif acts['ig'] is not False:
+            c = c + acts['ig']
+
         # Calculate new LSTM output with new cell state
-        h = self.a['out'](c) * acts['og']
+        h = self.a['out'](c)
+        if acts['og'] is not False:
+            h = h * acts['og']
         
-        return (c, h, *acts.values())
-    
-    def __cell_tickersteps_python__(self, fwd_input, rec_input, c_old, W_rec_cat, b, b_tickers):
-        
+        return (c, h, *[v if v is not False else torch.zeros((1,), dtype=self.dtype) for v in acts.values()])
+
+    def __cell_tickersteps_python__(self, rec_input, c_old, w_rec_cat, b, b_tickers):
+        """Template for self.cell_tickersteps() before torch.jit.trace()"""
         # Compute activations for concatenated weights and split them to inlets
-        net_recs_cat = torch.mm(rec_input, W_rec_cat)
-        
+        net_recs_cat = torch.mm(rec_input, w_rec_cat)
+
         acts = OrderedDict()
         for inlet in self.lstm_inlets:
             acts[inlet] = False
-            
+
             if inlet in self.__rec_cat_inds__:
                 if acts[inlet] is False:
                     acts[inlet] = net_recs_cat[:, self.__rec_cat_inds__[inlet][0]:self.__rec_cat_inds__[inlet][1]]
                 else:
                     acts[inlet] = acts[inlet] + net_recs_cat[:, self.__rec_cat_inds__[inlet][0]:
                                                                 self.__rec_cat_inds__[inlet][1]]
-            
+
             if inlet in self.__b_cat_inds__:
                 if acts[inlet] is False:
                     acts[inlet] = b[None, self.__b_cat_inds__[inlet][0]:
-                                          self.__b_cat_inds__[inlet][1]].repeat((fwd_input.shape[0], 1))
+                                          self.__b_cat_inds__[inlet][1]].repeat((c_old.shape[0], 1))
                 else:
                     acts[inlet] = acts[inlet] + b[None, self.__b_cat_inds__[inlet][0]:self.__b_cat_inds__[inlet][1]]
-            
+
             if inlet in self.__b_tickers_cat_inds__:
                 if acts[inlet] is False:
-                    acts[inlet] = b_tickers[None, self.__b_tickers_cat_inds__[inlet][0]:
-                                                  self.__b_tickers_cat_inds__[inlet][1]].repeat((fwd_input.shape[0], 1))
+                    acts[inlet] = b_tickers[None,
+                                  self.__b_tickers_cat_inds__[inlet][0]:
+                                  self.__b_tickers_cat_inds__[inlet][1]].repeat((c_old.shape[0], 1))
                 else:
                     acts[inlet] = acts[inlet] + b_tickers[None, self.__b_tickers_cat_inds__[inlet][0]:
                                                                 self.__b_tickers_cat_inds__[inlet][1]]
-            
+
             if acts[inlet] is False:
-                acts[inlet] = torch.FloatTensor([1.]).to(device=c_old.device).detach()
+                acts[inlet] = False
             else:
                 acts[inlet] = self.a[inlet](acts[inlet])
         
         # Calculate new cell state
-        c = acts['ci'] * acts['ig'] + c_old * acts['fg']
+        c = c_old
+        if acts['fg'] is not False:
+            c = c * acts['fg']
+        if acts['ci'] is not False and acts['ig'] is not False:
+            c = c + acts['ci'] * acts['ig']
+        elif acts['ci'] is not False:
+            c = c + acts['ci']
+        elif acts['ig'] is not False:
+            c = c + acts['ig']
         
         # Calculate new LSTM output with new cell state
-        h = self.a['out'](c) * acts['og']
+        h = self.a['out'](c)
+        if acts['og'] is not False:
+            h = h * acts['og']
         
-        return (c, h, *acts.values())
-    
-    def __compile_dynamic_cells__(self, x_0):
-        if self.__traced_cell__ is None:
-            self.__traced_cell__ = torch.jit.trace(self.__cell_python__, (x_0, self.h[-1], self.c[-1],
-                                                                          self.W_fwd_cat, self.W_rec_cat, self.b_cat))
-        __traced_cell__ = self.__traced_cell__
-        
-        if self.__apply_cell_traced__ is None:
-            if self.inputformat == 'NLC':
-                @torch.jit.script
-                def __apply_cell_traced__(fwd_inputs, h_old, c_old, W_fwd_cat, W_rec_cat, b):
-                    fwd_inputs = fwd_inputs.unbind(dim=1)
-                    h = torch.jit.annotate(List[torch.Tensor], [])
-                    c = torch.jit.annotate(List[torch.Tensor], [])
-                    ci = torch.jit.annotate(List[torch.Tensor], [])
-                    og = torch.jit.annotate(List[torch.Tensor], [])
-                    ig = torch.jit.annotate(List[torch.Tensor], [])
-                    fg = torch.jit.annotate(List[torch.Tensor], [])
-                    
-                    for t in range(len(fwd_inputs)):
-                        # Calculate activations for LSTM inlets and append them to self.lstm_inlets_activations
-                        cell_rets = __traced_cell__(fwd_inputs[t], h_old, c_old, W_fwd_cat, W_rec_cat, b)
-                        h_old = cell_rets[0]
-                        c_old = cell_rets[1]
-                        h += cell_rets[0]
-                        c += cell_rets[1]
-                        ci += cell_rets[2]
-                        og += cell_rets[3]
-                        ig += cell_rets[4]
-                        fg += cell_rets[5]
-                    return h, c, ci, og, ig, fg
-            elif self.inputformat == 'NCL':
-                @torch.jit.script
-                def __apply_cell_traced__(fwd_inputs, h_old, c_old, W_fwd_cat, W_rec_cat, b):
-                    fwd_inputs = fwd_inputs.unbind(dim=2)
-                    h = torch.jit.annotate(List[torch.Tensor], [])
-                    c = torch.jit.annotate(List[torch.Tensor], [])
-                    ci = torch.jit.annotate(List[torch.Tensor], [])
-                    og = torch.jit.annotate(List[torch.Tensor], [])
-                    ig = torch.jit.annotate(List[torch.Tensor], [])
-                    fg = torch.jit.annotate(List[torch.Tensor], [])
-                    
-                    for t in range(len(fwd_inputs)):
-                        # Calculate activations for LSTM inlets and append them to self.lstm_inlets_activations
-                        cell_rets = self.__traced_cell__(fwd_inputs[t], h_old, c_old, W_fwd_cat, W_rec_cat, b)
-                        h_old = cell_rets[0]
-                        c_old = cell_rets[1]
-                        h += cell_rets[0]
-                        c += cell_rets[1]
-                        ci += cell_rets[2]
-                        og += cell_rets[3]
-                        ig += cell_rets[4]
-                        fg += cell_rets[5]
-                    return h, c, ci, og, ig, fg
-            else:
-                raise ValueError("Input format {} not supported".format(self.inputformat))
-            
-            self.__apply_cell_traced__ = __apply_cell_traced__
-        
-        if self.n_tickersteps > 0:
-            if self.__traced_cell_tickersteps__ is None:
-                self.__traced_cell_tickersteps__ = torch.jit.trace(self.__cell_tickersteps_python__,
-                                                                   (x_0, self.h[-1], self.c[-1],
-                                                                    self.W_rec_cat, self.b_cat, self.b_tickers_cat))
-            __traced_cell_tickersteps__ = self.__traced_cell_tickersteps__
-            
-            if self.__apply_cell_tickersteps_traced__ is None:
-                @torch.jit.script
-                def __apply_cell_tickersteps_traced__(tickersteps, fwd_inputs, h_old, c_old, W_rec_cat, b, b_tickers):
-                    h = torch.jit.annotate(List[torch.Tensor], [])
-                    c = torch.jit.annotate(List[torch.Tensor], [])
-                    ci = torch.jit.annotate(List[torch.Tensor], [])
-                    og = torch.jit.annotate(List[torch.Tensor], [])
-                    ig = torch.jit.annotate(List[torch.Tensor], [])
-                    fg = torch.jit.annotate(List[torch.Tensor], [])
-                    
-                    for t in range(len(tickersteps)):
-                        # Calculate activations for LSTM inlets and append them to self.lstm_inlets_activations
-                        cell_rets = __traced_cell_tickersteps__(fwd_inputs, h_old, c_old, W_rec_cat, b, b_tickers)
-                        h_old = cell_rets[0]
-                        c_old = cell_rets[1]
-                        h += cell_rets[0]
-                        c += cell_rets[1]
-                        ci += cell_rets[2]
-                        og += cell_rets[3]
-                        ig += cell_rets[4]
-                        fg += cell_rets[5]
-                    
-                    return h, c, ci, og, ig, fg
-                
-                self.__apply_cell_tickersteps_traced__ = __apply_cell_tickersteps_traced__
-    
-    def forward(self, x, true_seq_lens=None):
-        """ Compute LSTM forward pass
+        return (c, h, *[v if v is not False else torch.zeros((1,), dtype=self.dtype) for v in acts.values()])
 
-        Compute LSTM forward pass.
+
+class LSTMLayer(jit.ScriptModule):
+    def __init__(self, in_features, out_features,
+                 w_ci=nn.init.normal_, w_ig=nn.init.normal_, w_og=nn.init.normal_, w_fg=False,
+                 b_ci=nn.init.normal_, b_ig=nn.init.normal_, b_og=nn.init.normal_, b_fg=False,
+                 a_ci=torch.tanh, a_ig=torch.sigmoid, a_og=torch.sigmoid, a_fg=lambda x: x, a_out=torch.tanh,
+                 c_init=lambda t: nn.init.constant_(t, val=0).detach_(),
+                 h_init=lambda t: nn.init.constant_(t, val=0).detach_(),
+                 b_ci_tickers=nn.init.normal_, b_ig_tickers=nn.init.normal_, b_og_tickers=nn.init.normal_,
+                 b_fg_tickers=False, n_tickersteps=0, inputformat='NLC', dtype: torch.dtype = torch.float32):
+        """Flexible LSTM layer supporting
+          - individual initialization of forward and recurrent LSTM weights and biases,
+          - disabling connections to gates or cell input (forward and/or recurrent) via initializers,
+          - individual activation functions for LSTM gates, cell input, and cell output,
+          - access to cell state, cell output, and gate activations,
+          - initialization of (optionally trainable) initial cell state and cell output,
+          - modification of recurrent inputs,
+          - PyTorch TorchScript optimization,
+          - ponder-/tickersteps with dedicated bias weights (https://arxiv.org/abs/1603.08983),
+          - return of LSTM activation at every or only last sequence position,
+          - inputformat 'NLC' [samples, sequence positions, in_features] or 'NCL',
+          - plotting of the LSTM internals.
+        
+        Provides functions
+          - forward() for processing a sequence with the LSTM,
+          - plot_internals() for plotting the LSTM gate-, cell input-, and cell output activations
+          - get_weights() and get_biases() for retrieving weight and bias values.
+        
+        Abbreviations:
+         - ci = cell input,
+         - ig = input gate,
+         - og = output gate,
+         - fg = forget gate weights,
+         - out = cell output.
+        
+        Default: Forget gate disabled, other connections and biases enabled,
+        tanh cell input and cell output activation function,
+        sigmoid gate activation functions, nn.init.normal_ initializer for weights and biases.
+        
+        Parameters
+        -------
+        in_features : int
+            Number of input features
+        out_features : int
+            Number of output features (=number of LSTM blocks)
+        w_ci, w_ig, w_og, w_fg : function or list of function or bool
+            Initializer function(s) for respective weights;
+            If 2-element list: Interpreted as [w_fwd, w_rec] to define different weight initializations for forward and
+            recurrent connections respectively;
+            If single element: forward and recurrent connections will use the same initializer function;
+            If False: connection will be cut (single element of 2-element tuple may be set to False as well);
+            Shape of weights will be w_fwd: [n_fwd_features, n_lstm], w_rec: [n_rec_features, n_lstm];
+        b_ci, b_ig, b_og, b_fg : function or bool
+            Initializer function for respective biases;
+            If set to False, connection will be cut;
+        a_ci, a_ig, a_og, a_fg, a_out : function
+            Activation function for gate/cell input/cell output;
+        b_ci_tickers, b_ig_tickers, b_og_tickers, b_fg_tickers : function or bool
+            Initializer function for respective biases applied only during ticker steps;
+            If set to False, connection will be cut;
+        c_init : function
+            Initializer function for cell states; Default: Zero and not trainable;
+        h_init : function
+            Initializer function for cell states; Default: Zero and not trainable;
+        n_tickersteps : int
+            Number of ponder-/tickersteps to add at end of sequence;
+            n_tickersteps sequence positions without forward input will be added at the end of the sequence;
+            Only during tickersteps, additional bias units (b_ci_tickers, b_ig_tickers, b_og_tickers, b_fg_tickers)
+            will be added to the LSTM input;
+        inputformat : str
+            Input tensor format;
+            'NCL' -> (batchsize, channels, seq.length);
+            'NLC' -> (batchsize, seq.length, channels);
+        dtype : torch.dtype
+            Datatype of input tensor, states, and weights;
+        """
+        super(LSTMLayer, self).__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.lstm_inlets = ['ci', 'ig', 'og', 'fg']
+        self.n_tickersteps = n_tickersteps
+        self.inputformat = inputformat
+        
+        # Check for valid input format
+        if self.inputformat != 'NLC' and self.inputformat != 'NCL':
+            raise ValueError("Input format {} not supported".format(self.inputformat))
+        
+        # Get LSTM cell
+        self.lstm_cell = LSTMCell(n_fwd_features=in_features, n_lstm=out_features,
+                                  w_ci=w_ci, w_ig=w_ig, w_og=w_og, w_fg=w_fg,
+                                  b_ci=b_ci, b_ig=b_ig, b_og=b_og, b_fg=b_fg,
+                                  a_ci=a_ci, a_ig=a_ig, a_og=a_og, a_fg=a_fg, a_out=a_out,
+                                  b_ci_tickers=b_ci_tickers, b_ig_tickers=b_ig_tickers, b_og_tickers=b_og_tickers,
+                                  b_fg_tickers=b_fg_tickers, dtype=dtype)
+        
+        # Get initializer for tensors
+        self.c_init = c_init
+        self.h_init = h_init
+        self.c_first = nn.Parameter(torch.zeros((out_features,), dtype=dtype))
+        self.h_first = nn.Parameter(torch.zeros((out_features,), dtype=dtype))
+
+        # Cell states and LSTM outputs at each timestep for each sample will be stored in a list
+        self.c = []
+        self.h = []
+        
+        # Activations of LSTM inlets at each timestep for each sample will be stored in a list
+        self.lstm_inlets_activations = OrderedDict(zip(self.lstm_inlets, [[], [], [], []]))
+        
+        # Initialize tensors
+        self.__reset_parameters__()
+
+        # This will optionally hold the true sequence lengths (before padding) for plotting
+        self.true_seq_lens = None
+        
+        # This will hold the input sequences for plotting
+        self.x = None
+        
+        # Optimize function for input splitting for chosen input format
+        if self.inputformat == 'NLC':
+            @torch.jit.script
+            def unbind_inputs(fwd_inputs):
+                fwd_inputs = fwd_inputs.unbind(dim=1)
+                return fwd_inputs
+        else:
+            @torch.jit.script
+            def unbind_inputs(fwd_inputs):
+                fwd_inputs = fwd_inputs.unbind(dim=2)
+                return fwd_inputs
+        self.unbind_inputs = unbind_inputs
+
+    def __reset_parameters__(self):
+        """Reset trainable parameters (initial cell state and initial cell output)"""
+        # Initialize cell state and LSTM output at timestep -1
+        self.c_init(self.c_first)
+        self.h_init(self.h_first)
+
+    def __reset_lstm_internals__(self, n_samples):
+        """Reset LSTM state and start new sequence (=reset cell state, cell output, and stored activations)"""
+        # Cell states and LSTM outputs at each timestep for each sample will be stored in a list
+        self.c = [self.c_first.repeat((n_samples, 1))]
+        self.h = [self.h_first.repeat((n_samples, 1))]
+        
+        # Activations of LSTM inlets at each timestep for each sample will be stored in a list
+        self.lstm_inlets_activations = OrderedDict(zip(self.lstm_inlets, [[], [], [], []]))
+    
+    @torch.jit.script_method
+    def __apply_cell__(self, fwd_inputs, h_old, c_old):
+        """Apply LSTM cell to a sequence"""
+        fwd_inputs = self.unbind_inputs(fwd_inputs)
+        c = torch.jit.annotate(List[torch.Tensor], [])
+        h = torch.jit.annotate(List[torch.Tensor], [])
+        ci = torch.jit.annotate(List[torch.Tensor], [])
+        ig = torch.jit.annotate(List[torch.Tensor], [])
+        og = torch.jit.annotate(List[torch.Tensor], [])
+        fg = torch.jit.annotate(List[torch.Tensor], [])
+        
+        for t in range(len(fwd_inputs)):
+            # Calculate activations for LSTM inlets and append them to self.lstm_inlets_activations
+            cell_rets = self.lstm_cell.cell(fwd_inputs[t], h_old, c_old)
+            c_old = cell_rets[0]
+            h_old = cell_rets[1]
+            c += c_old
+            h += h_old
+            ci += cell_rets[2]
+            ig += cell_rets[3]
+            og += cell_rets[4]
+            fg += cell_rets[5]
+        return c, h, ci, ig, og, fg
+        
+    @torch.jit.script_method
+    def __apply_cell_tickersteps__(self, tickersteps, h_old, c_old):
+        """Apply LSTM cell to a sequence during tickersteps"""
+        c = torch.jit.annotate(List[torch.Tensor], [])
+        h = torch.jit.annotate(List[torch.Tensor], [])
+        ci = torch.jit.annotate(List[torch.Tensor], [])
+        ig = torch.jit.annotate(List[torch.Tensor], [])
+        og = torch.jit.annotate(List[torch.Tensor], [])
+        fg = torch.jit.annotate(List[torch.Tensor], [])
+        
+        for t in range(len(tickersteps)):
+            # Calculate activations for LSTM inlets and append them to self.lstm_inlets_activations
+            cell_rets = self.lstm_cell.cell_tickersteps(h_old, c_old)
+            c_old = cell_rets[0]
+            h_old = cell_rets[1]
+            c += c_old
+            h += h_old
+            ci += cell_rets[2]
+            ig += cell_rets[3]
+            og += cell_rets[4]
+            fg += cell_rets[5]
+        
+        return c, h, ci, ig, og, fg
+    
+    def forward(self, x, return_all_seq_pos: bool = False, true_seq_lens=None, reset_state=True):
+        """ Process sequence with LSTM layer.
+        
+        Process an input sequence x with the LSTM layer.
+        If return_all_seq_pos, activations at each sequence position will be returned,
+        otherwise only the activation at the last sequence position will be returned.
+        
+        For padded sequences, true_seq_lens can be used to feed the true sequence lengths.
+        
         If using tickersteps and true_seq_lens, the tickerstep activations are appended at the end of the padded
         sequences. This also holds for the LSTM internals and the cellstate. However, the tickerstep activations are
         correctly computed beginning with the last activation at the true sequence length.
 
         Parameters
         ----------
-        x: tensor
-            Input tensor of shape (batchsize, length, channels) if NLC or (batchsize, channels, length) if NCL
-        true_seq_lens: list or array of int
-            Optional: True sequence lengths of padded sequences
-
+        x: torch.Tensor
+            Input tensor of shape [samples, sequence positions, in_features]
+            or [samples, in_features, sequence positions], depending on chosen inputformat.
+        return_all_seq_pos : bool
+            True: Return output for all sequence positions (continuous prediction);
+            False: Only return output at last sequence position (single target prediction);
+        true_seq_lens: list of int or None
+            If not None: True sequence lengths of padded sequences in x. len(true_seq_lens) has to be len(x).
+        reset_state : bool
+            Reset LSTM cell state and cell output at beginning of sequence.
+            If False, the sequence will be continued from the last processed sequence.
+        
         Returns
         --------
-        h_out: tensor
-            return_all_seq_pos == True: Output of LSTM for all (possibly padded) sequence positions in shape NLC or NCL.
-            Tickerstep activations are appended at the end of the padded sequences if true_seq_lens is provided.
-            return_all_seq_pos == False: Output of LSTM at last sequence position (after tickersteps) in shape NC.
-        h: list of tensor
-            List of LSTM outputs for every sequence position in shape list(NC)
-        c: list of tensor
-            List of LSTM cell states for every sequence position in shape list(NC)
-        lstm_inlets_activations: OrderedDict of list of tensor
-            OrderedDict of lists of internal LSTM states for every sequence position in shape list(NC) with keys
-            ['ci', 'ig', 'og', 'fg'], representing cell input, input gate, output gate, and forget gate respectively.
+        (torch.Tensor, OrderedDict)
+            h_out : torch.Tensor
+                If return_all_seq_pos: Output of LSTM for all (possibly padded) sequence positions in shape NLC or
+                NCL.
+                Tickerstep activations are appended at the end of the padded sequences if true_seq_lens is provided.
+                If not return_all_seq_pos: Output of LSTM at last sequence position (after tickersteps) in shape NC.
+            lstm_inlets_activations: OrderedDict of list of torch.Tensor
+                OrderedDict containing lists of internal LSTM states.
+                Each list contains the activations for every sequence position, with every list element of shape NC.
+                OrderedDict keys are ['h', 'c', 'ci', 'ig', 'og', 'fg'], representing cell output, cell state,
+                 cell input, input gate, output gate, and forget gate.
         """
         self.true_seq_lens = true_seq_lens
         self.x = x
         
         if self.inputformat == 'NLC':
             n_samples, n_seqpos, n_features = x.shape
-            x_0 = x[:, 0]
         elif self.inputformat == 'NCL':
             n_samples, n_features, n_seqpos = x.shape
-            x_0 = x[:, :, 0]
         else:
             raise ValueError("Input format {} not supported".format(self.inputformat))
         
-        self.reset_lstm_internals(n_samples=n_samples)
-        
-        self.__compile_dynamic_cells__(x_0)
-        
+        if reset_state:
+            self.__reset_lstm_internals__(n_samples=n_samples)
+
         # Calculate activations for LSTM inlets and append them to self.lstm_inlets_activations
-        cell_rets = self.__apply_cell_traced__(x, self.h[-1], self.c[-1], self.W_fwd_cat, self.W_rec_cat, self.b_cat)
-        self.h += cell_rets[0]
-        self.c += cell_rets[1]
+        cell_rets = self.__apply_cell__(x, self.h[-1], self.c[-1])
+        self.c += cell_rets[0]
+        self.h += cell_rets[1]
         self.lstm_inlets_activations['ci'] += cell_rets[2]
-        self.lstm_inlets_activations['og'] += cell_rets[3]
-        self.lstm_inlets_activations['ig'] += cell_rets[4]
+        self.lstm_inlets_activations['ig'] += cell_rets[3]
+        self.lstm_inlets_activations['og'] += cell_rets[4]
         self.lstm_inlets_activations['fg'] += cell_rets[5]
         
         #
@@ -973,24 +671,23 @@ class LSTMLayerOptimized(jit.ScriptModule):
             #
             # Calculate tickerstep activations
             #
-            cell_rets = self.__apply_cell_tickersteps_traced__(torch.arange(self.n_tickersteps), x_0, ticker_h,
-                                                               ticker_c, self.W_rec_cat, self.b_cat, self.b_tickers_cat)
+            cell_rets = self.__apply_cell_tickersteps__(torch.arange(self.n_tickersteps), ticker_h, ticker_c)
             
             # Append tickerstep activations to end of (possibly padded) sequences
-            self.h += cell_rets[0]
-            self.c += cell_rets[1]
+            self.c += cell_rets[0]
+            self.h += cell_rets[1]
             self.lstm_inlets_activations['ci'] += cell_rets[2]
-            self.lstm_inlets_activations['og'] += cell_rets[3]
-            self.lstm_inlets_activations['ig'] += cell_rets[4]
+            self.lstm_inlets_activations['ig'] += cell_rets[3]
+            self.lstm_inlets_activations['og'] += cell_rets[4]
             self.lstm_inlets_activations['fg'] += cell_rets[5]
-            
+
             # Set output after tickersteps as new final output
             last_h = self.h[-1]
         
         #
         # Finalize output of LSTM
         #
-        if self.return_all_seq_pos:
+        if return_all_seq_pos:
             # Output is LSTM output at each position
             if self.inputformat == 'NLC':
                 h_out = torch.stack(self.h[1:], 1)
@@ -1002,46 +699,53 @@ class LSTMLayerOptimized(jit.ScriptModule):
             # Output is LSTM output at last (existing) position
             h_out = last_h
         
-        return h_out, self.h, self.c, self.lstm_inlets_activations
-    
+        return h_out, OrderedDict([('h', self.h), ('c', self.c)] + list(self.lstm_inlets_activations.items()))
+
     def get_weights(self):
-        """Return dictionaries for W_fwd and W_rec; These are views on the actual concatenated parameters;"""
-        return self.W_fwd, self.W_rec
+        """Return dictionaries for w_fwd and w_rec; These are views on the actual concatenated parameters;"""
+        return self.w_fwd, self.w_rec
     
     def get_biases(self):
         """Return dictionaries for with biases and """
         return self.b
     
     def __tensor_to_numpy__(self, t):
+        """Try to convert a tensor or numpy.ndarray t to a numpy.ndarray"""
         try:
             t = t.numpy()
         except TypeError:
             t = t.cpu().numpy()
         except AttributeError:
-            t = np.as_array(t)
+            t = np.asarray(t)
         except RuntimeError:
             t = t.clone().data.cpu().numpy()
         return t
     
     def plot_internals(self, mb_index: int = 0, filename: str = None, show_plot: bool = False, fdict: dict = None,
                        verbose=True):
-        """Plot LSTM output, LSTM internal states, and LSTM input
-
-        Plots LSTM input, LSTM output (h), LSTM cell state (c), LSTM gate activations, and LSTM cell input in separated
-        axes. Each plot contains activations for all LSTM blocks (line colors identify individual LSTM units).
+        """Plot LSTM internal states and LSTM input for sample mb_index.
+        
+        Plots LSTM input, LSTM output ('h'), LSTM cell state ('c'), LSTM gate activations ('ig', 'og', 'fg'),
+        and LSTM cell input ('ci') in separated axes.
+        Each plot contains activations for all LSTM blocks (line colors identify individual LSTM units) for all
+        sequence positions.
+        The current internal states of the LSTM will be plotted, that is the last processed sequence at sample index
+        mb_index.
 
         Parameters
         ----------
         mb_index: int
             Index of sample to plot (index in minibatch)
         filename: str
-            If specified, plot will be saved at location specified by filename. Necessary path will be created
+            If specified, plot will be saved at location specified by filename. Necessary paths will be created
             automatically.
         show_plot: bool
             True: Display plot
             False: Do not display plot
         fdict: dict
             kwargs passed to matplotlib.pyplot.subplots() function
+        verbose: bool
+            Verbose printing of plotting runtime
         """
         if filename is not None:
             os.makedirs(os.path.dirname(filename), exist_ok=True)
@@ -1060,7 +764,7 @@ class LSTMLayerOptimized(jit.ScriptModule):
         lstm_internals_copy['input'] = self.__tensor_to_numpy__(self.x[mb_index])
         
         #
-        # Remove activations between last true sequence position and start of tickersteps
+        # Remove activations between last true sequence position and start_time of tickersteps for padded sequences
         #
         if self.true_seq_lens is not None:
             true_seq_len = self.true_seq_lens[mb_index]
@@ -1074,10 +778,10 @@ class LSTMLayerOptimized(jit.ScriptModule):
                 else:
                     lstm_internals_copy[key] = np.concatenate((lstm_internals_copy[key][:tsl],
                                                                lstm_internals_copy[key][-self.n_tickersteps:]), axis=0)
-        
+
         plot_labels = [a for z in zip_longest(['input', 'h', 'c'], self.lstm_inlets) for a in z]
         max_len = max([v.shape[0] for v in lstm_internals_copy.values()])
-        
+
         #
         # Do plotting: 1 axis per LSTM internal
         #
@@ -1111,4 +815,4 @@ class LSTMLayerOptimized(jit.ScriptModule):
             del fig
         
         if verbose:
-            print(f"    ...done! ({time.time() - start_time:8.7f}sec)")
+            print(f" done! ({time.time() - start_time:8.7f}sec)")
