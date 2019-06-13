@@ -16,10 +16,11 @@ Run the more advanced example via
 ```python3 widis_lstm_tools/examples/model_selection/main.py config.json```
 
 ## Includes
-- Flexible [LSTM implementation](widis_lstm_tools/nn.py#L69) including
+- Flexible [LSTM Cell and LSTM Layer implementation](widis_lstm_tools/nn.py#L69) including
   - Easy access to individual forward and recurrent LSTM connections and biases, with options to cut/modify individual connections to gates or cell input (see e.g. https://arxiv.org/abs/1503.04069 for some useful modifications)
   - Plotting function for LSTM internal states
   - Support for Ticker/Tinker-Steps at the end of the sequence (https://arxiv.org/abs/1603.08983)
+  - Automatic optimizations via [TorchScript](https://pytorch.org/docs/stable/jit.html)
 - Preprocessing tools
   - [Padding of different sequence lengths](widis_lstm_tools/preprocessing.py#L108)
   - [Encoding for nicely feeding float or integer numbers as inputs to the LSTM](widis_lstm_tools/preprocessing.py#L225)
@@ -36,7 +37,7 @@ Run the more advanced example via
 ## Requirements
 - [Python3.6](https://www.python.org/) or higher
 - Python packages:
-   - [Pytorch](https://pytorch.org/) (tested with version 1.0.1)
+   - [Pytorch](https://pytorch.org/) (tested with version 1.1.0)
    - [numpy](https://www.numpy.org/) (tested with version 1.16.2)
    - [matplotlib](https://matplotlib.org/) (tested with version 3.0.3)
 

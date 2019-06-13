@@ -11,6 +11,9 @@ import argparse
 import json
 import datetime
 from collections import OrderedDict
+from widis_lstm_tools.utils.collection import import_object
+import torch
+from copy import deepcopy
 
 
 def get_config():
@@ -46,6 +49,79 @@ def get_config():
     except KeyError:
         resdir = None
     return config, resdir
+
+
+def layers_from_list(layerspecs, custom_types=None, verbose=False):
+    """Create a torch.nn.Sequential() network OrderedDict from a list of layer specifications where layer classes are
+    specified as strings
+    
+    Create a network from a list of layer specifications (dictionaries where layer classes are
+    specified as strings); Layer in list will be created one-by-one, each with previous layer as input, as done by
+    torch.nn.Sequential(); This allows to create a network from e.g. a json dictionary;
+    
+    Parameters
+    ----------
+    layerspecs : list of dict
+        Network design as list of dictionaries, where each dict represents the layer parameters as kwargs and requires
+        additional keys:
+        layer : str
+            A string value that is the layer class to instantiate.
+            "layer" may include module paths (e.g. torch.nn.Conv2d()), modules will be imported automatically.
+            "layer" may also be a key to a class in custom_types.
+        name : str
+            Name of the layer. Will serve as key to to the layer in the torch.nn.Sequential() OrderedDict().
+    custom_types : dict
+        Dictionary containing custom layer classes you want to use (if you do not want to import the class).
+        E.g. custom_types={'my_layer':my_layer_class} will make the class my_layer_class available via layerspecs entry
+        {"type": "my_layer", "name": "my_layer1"}.
+    
+    Returns
+    ----------
+    network_dict : torch.nn.Sequential() network OrderedDict
+        Network as list of Pytorch layers in torch.nn.Sequential() OrderedDict
+        
+    Example
+    -------
+    >>> layerspecs = [
+    >>>   {"layer": "torch.nn.Conv2d", "name": "conv1", "in_channels": 32,  "out_channels": 16, "kernel_size": 3},
+    >>>   {"layer": "torch.nn.ReLU", "name": "relu1"},
+    >>>   {"layer": "torch.nn.Conv2d", "name": "conv2", "in_channels": 16,  "out_channels": 8, "kernel_size": 3},
+    >>>   {"layer": "torch.nn.ReLU", "name": "relu2"}]
+    >>> network = layers_from_specs(layerspecs=layerspecs)
+    >>> # ...
+    >>> x = torch.rand(size=(32, 55, 55), dtype=torch.float32)
+    >>> output = network(x)
+    """
+    if custom_types is None:
+        custom_types = {}
+    
+    layerspecs = deepcopy(layerspecs)
+    layer_dict = OrderedDict()
+    for layerspec in layerspecs:
+        layertype = layerspec.pop('layer')
+        orig_name = layerspec.pop('name')
+        name = orig_name
+        i = 1
+        while name in layer_dict:
+            name = f"{orig_name}_{i}"
+            i += 1
+        
+        try:
+            if layertype in custom_types:
+                layer_instance = custom_types[layertype](**layerspec)
+            else:
+                layerclass = import_object(layertype)
+                layer_instance = layerclass(**layerspec)
+        except Exception as e:
+            print(f"Error in layer {layerclass} ({name}) with kwargs {layerspec}")
+            raise e
+        
+        layer_dict[name] = layer_instance
+    
+    if verbose:
+        print(f"Creating network:\n{layer_dict}")
+    
+    return torch.nn.Sequential(layer_dict)
 
 
 class ObjectDict(OrderedDict):

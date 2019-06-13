@@ -11,11 +11,26 @@ import sys
 import copy
 import numpy as np
 import torch
+import importlib
 
 from collections import OrderedDict
 
 FILEHANDLES = []
 
+
+def import_object(objname):
+    objmodule = importlib.import_module(objname.split('.', maxsplit=1)[0])
+    return get_rec_attr(objmodule, objname.split('.', maxsplit=1)[-1])
+
+
+def get_rec_attr(module, attrstr):
+    """Get attributes and do so recursively if needed"""
+    if attrstr is None:
+        return None
+    attrs = attrstr.split('.')
+    for attr in attrs:
+        module = getattr(module, attr)
+    return module
 
 def close_all():
     """Try to flush and close all file handles"""

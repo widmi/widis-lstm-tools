@@ -12,7 +12,7 @@ widis_lstm_tools.preprocessing.TriangularValueEncoding(), which will make LSTM l
 Input: Command line argument with path to config file 'config.json'.
 Output: Output files will be saved in the output folder specified in 'config.json'.
 
-Dataset: Dataset 'RandomOrSigmoidalEncoded' gives us sequences that need to be classified into random uniform signal or
+Dataset: Dataset 'RandomOrSineEncoded' gives us sequences that need to be classified into random uniform signal or
 sigmoidal signals.
 Sequences have different lengths, so we need to use widis_lstm_tools.preprocessing.PadToEqualLengths for padding.
 Values in sequences are encoded in 16 input features, so a sequence will have shape (seq_len, 16).
@@ -48,10 +48,9 @@ class Net(nn.Module):
         self.lstm1 = LSTMLayer(
             n_input_features, n_lstm,
             inputformat='NLC',  # Input format can be 'NLC' (samples, length, channels) or 'NCL'
-            return_all_seq_pos=False,  # return predictions for last sequence positions only
-            W_ci=(nn.init.normal_, False),  # cell input: weights to forward inputs (normal init)
-            W_ig=(False, nn.init.normal_),  # input gate: weights to recurrent inputs (normal init)
-            W_og=(False, nn.init.normal_,),  # output gate: weights to recurrent inputs (normal init)
+            w_ci=(nn.init.normal_, False),  # cell input: weights to forward inputs (normal init)
+            w_ig=(False, nn.init.normal_),  # input gate: weights to recurrent inputs (normal init)
+            w_og=(False, nn.init.normal_,),  # output gate: weights to recurrent inputs (normal init)
             a_out=lambda x: x,  # LSTM output activation shall be identity function
             b_ig=lambda *args, **kwargs: nn.init.normal_(mean=-5, *args, **kwargs),  # neg. input gate bias for long seq
             n_tickersteps=5,  # Optionally let LSTM do computations after sequence end, using tickersteps/tinkersteps
@@ -62,7 +61,10 @@ class Net(nn.Module):
     
     def forward(self, x, true_seq_lens):
         # We only need the output of the LSTM; We get format (samples, n_lstm) since we set return_all_seq_pos=False:
-        lstm_out, *_ = self.lstm1(x, true_seq_lens=true_seq_lens)
+        lstm_out, *_ = self.lstm1(x,
+                                  true_seq_lens=true_seq_lens,  # true sequence lengths of padded sequences
+                                  return_all_seq_pos=False   # return predictions for last sequence positions only
+                                  )
         net_out = self.fc_out(lstm_out)
         return net_out
 
@@ -157,6 +159,9 @@ def main():
     update, best_validation_loss, validation_bacc = (state['update'], state['best_validation_loss'],
                                                      state['validation_bacc'])
     
+    # Save initial model as first model
+    saver_loader.save_to_ram(savename=str(update))
+    
     #
     # Start training
     #
@@ -247,8 +252,9 @@ def main():
     
     # Calculate scores and loss on test set
     print("  Calculating testset score...", end='')
+    test_start_time = time.time()
     test_bacc, test_loss = calc_score(scoring_dataloader=test_set_loader, scoring_dataset=test_set)
-    print(f" ...done! ({time.time()-validation_start_time})")
+    print(f" ...done! ({time.time()-test_start_time})")
     
     # Print results
     tprint(f"[test] u: {update:07d}; loss: {test_loss:8.7f}; bacc: {test_bacc:5.4f}")

@@ -41,10 +41,9 @@ class Net(nn.Module):
         self.lstm1 = LSTMLayer(
             n_input_features, n_lstm,
             inputformat='NLC',  # Input format can be 'NLC' (samples, length, channels) or 'NCL'
-            return_all_seq_pos=False,  # return predictions for last sequence positions only
-            W_ci=(nn.init.normal_, False),  # cell input: weights to forward inputs (normal init)
-            W_ig=(False, nn.init.normal_),  # input gate: weights to recurrent inputs (normal init)
-            W_og=(False, nn.init.normal_,),  # output gate: weights to recurrent inputs (normal init)
+            w_ci=(nn.init.normal_, False),  # cell input: weights to forward inputs (normal init)
+            w_ig=(False, nn.init.normal_),  # input gate: weights to recurrent inputs (normal init)
+            w_og=(False, nn.init.normal_,),  # output gate: weights to recurrent inputs (normal init)
             a_out=lambda x: x,  # LSTM output activation shall be identity function
             b_ig=lambda *args, **kwargs: nn.init.normal_(mean=-5, *args, **kwargs),  # neg. input gate bias for long seq
             n_tickersteps=5  # Optionally let LSTM do computations after sequence end, using tickersteps/tinkersteps
@@ -55,7 +54,10 @@ class Net(nn.Module):
     
     def forward(self, x, true_seq_lens):
         # We only need the output of the LSTM; We get format (samples, n_lstm) since we set return_all_seq_pos=False:
-        lstm_out, *_ = self.lstm1(x, true_seq_lens=true_seq_lens)
+        lstm_out, *_ = self.lstm1(x,
+                                  true_seq_lens=true_seq_lens,  # true sequence lengths of padded sequences
+                                  return_all_seq_pos=False   # return predictions for last sequence positions only
+                                  )
         net_out = self.fc_out(lstm_out)
         return net_out
 
