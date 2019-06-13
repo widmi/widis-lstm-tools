@@ -1,4 +1,4 @@
-# widis-lstm-tools v0.1
+# widis-lstm-tools v0.2
 Various Tools for working with Long Short-Term Memory (LSTM) networks and sequences in [Pytorch](https://pytorch.org/),
 aimed at getting your LSTM networks under control and providing a flexible template for your LSTM-needs.
 
