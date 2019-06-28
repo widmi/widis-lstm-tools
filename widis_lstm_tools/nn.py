@@ -285,9 +285,15 @@ class LSTMCell(jit.ScriptModule):
     def __cell_python__(self, fwd_input, rec_input, c_old, w_fwd_cat, w_rec_cat, b):
         """Template for self.cell() before torch.jit.trace()"""
         # Compute activations for concatenated weights and split them to inlets
-        net_fwds_cat = torch.mm(fwd_input, w_fwd_cat)
-        net_recs_cat = torch.mm(rec_input, w_rec_cat)
-
+        if self.n_fwd_features > 0:
+            net_fwds_cat = torch.mm(fwd_input, w_fwd_cat)
+        else:
+            net_fwds_cat = torch.zeros_like(fwd_input[:, 0:0])
+        if self.n_rec_features > 0:
+            net_recs_cat = torch.mm(rec_input, w_rec_cat)
+        else:
+            net_recs_cat = torch.zeros_like(rec_input[:, 0:0])
+        
         acts = OrderedDict()
         for inlet in self.lstm_inlets:
             acts[inlet] = False
@@ -297,26 +303,26 @@ class LSTMCell(jit.ScriptModule):
                 else:
                     acts[inlet] = acts[inlet] + net_fwds_cat[:, self.__fwd_cat_inds__[inlet][0]:
                                                                 self.__fwd_cat_inds__[inlet][1]]
-
+            
             if inlet in self.__rec_cat_inds__:
                 if acts[inlet] is False:
                     acts[inlet] = net_recs_cat[:, self.__rec_cat_inds__[inlet][0]:self.__rec_cat_inds__[inlet][1]]
                 else:
                     acts[inlet] = acts[inlet] + net_recs_cat[:, self.__rec_cat_inds__[inlet][0]:
                                                                 self.__rec_cat_inds__[inlet][1]]
-
+            
             if inlet in self.__b_cat_inds__:
                 if acts[inlet] is False:
                     acts[inlet] = b[None, self.__b_cat_inds__[inlet][0]:
                                           self.__b_cat_inds__[inlet][1]].repeat((fwd_input.shape[0], 1))
                 else:
                     acts[inlet] = acts[inlet] + b[None, self.__b_cat_inds__[inlet][0]:self.__b_cat_inds__[inlet][1]]
-
+            
             if acts[inlet] is False:
                 acts[inlet] = False
             else:
                 acts[inlet] = self.a[inlet](acts[inlet])
-
+        
         # Calculate new cell state
         c = c_old
         if acts['fg'] is not False:
@@ -327,37 +333,37 @@ class LSTMCell(jit.ScriptModule):
             c = c + acts['ci']
         elif acts['ig'] is not False:
             c = c + acts['ig']
-
+        
         # Calculate new LSTM output with new cell state
         h = self.a['out'](c)
         if acts['og'] is not False:
             h = h * acts['og']
         
         return (c, h, *[v if v is not False else torch.zeros((1,), dtype=self.dtype) for v in acts.values()])
-
+    
     def __cell_tickersteps_python__(self, rec_input, c_old, w_rec_cat, b, b_tickers):
         """Template for self.cell_tickersteps() before torch.jit.trace()"""
         # Compute activations for concatenated weights and split them to inlets
         net_recs_cat = torch.mm(rec_input, w_rec_cat)
-
+        
         acts = OrderedDict()
         for inlet in self.lstm_inlets:
             acts[inlet] = False
-
+            
             if inlet in self.__rec_cat_inds__:
                 if acts[inlet] is False:
                     acts[inlet] = net_recs_cat[:, self.__rec_cat_inds__[inlet][0]:self.__rec_cat_inds__[inlet][1]]
                 else:
                     acts[inlet] = acts[inlet] + net_recs_cat[:, self.__rec_cat_inds__[inlet][0]:
                                                                 self.__rec_cat_inds__[inlet][1]]
-
+            
             if inlet in self.__b_cat_inds__:
                 if acts[inlet] is False:
                     acts[inlet] = b[None, self.__b_cat_inds__[inlet][0]:
                                           self.__b_cat_inds__[inlet][1]].repeat((c_old.shape[0], 1))
                 else:
                     acts[inlet] = acts[inlet] + b[None, self.__b_cat_inds__[inlet][0]:self.__b_cat_inds__[inlet][1]]
-
+            
             if inlet in self.__b_tickers_cat_inds__:
                 if acts[inlet] is False:
                     acts[inlet] = b_tickers[None,
@@ -366,7 +372,7 @@ class LSTMCell(jit.ScriptModule):
                 else:
                     acts[inlet] = acts[inlet] + b_tickers[None, self.__b_tickers_cat_inds__[inlet][0]:
                                                                 self.__b_tickers_cat_inds__[inlet][1]]
-
+            
             if acts[inlet] is False:
                 acts[inlet] = False
             else:
@@ -490,7 +496,7 @@ class LSTMLayer(jit.ScriptModule):
         self.h_init = h_init
         self.c_first = nn.Parameter(torch.zeros((out_features,), dtype=dtype))
         self.h_first = nn.Parameter(torch.zeros((out_features,), dtype=dtype))
-
+        
         # Cell states and LSTM outputs at each timestep for each sample will be stored in a list
         self.c = []
         self.h = []
@@ -500,7 +506,7 @@ class LSTMLayer(jit.ScriptModule):
         
         # Initialize tensors
         self.__reset_parameters__()
-
+        
         # This will optionally hold the true sequence lengths (before padding) for plotting
         self.true_seq_lens = None
         
@@ -519,13 +525,13 @@ class LSTMLayer(jit.ScriptModule):
                 fwd_inputs = fwd_inputs.unbind(dim=2)
                 return fwd_inputs
         self.unbind_inputs = unbind_inputs
-
+    
     def __reset_parameters__(self):
         """Reset trainable parameters (initial cell state and initial cell output)"""
         # Initialize cell state and LSTM output at timestep -1
         self.c_init(self.c_first)
         self.h_init(self.h_first)
-
+    
     def __reset_lstm_internals__(self, n_samples):
         """Reset LSTM state and start new sequence (=reset cell state, cell output, and stored activations)"""
         # Cell states and LSTM outputs at each timestep for each sample will be stored in a list
@@ -636,7 +642,7 @@ class LSTMLayer(jit.ScriptModule):
         
         if reset_state:
             self.__reset_lstm_internals__(n_samples=n_samples)
-
+        
         # Calculate activations for LSTM inlets and append them to self.lstm_inlets_activations
         cell_rets = self.__apply_cell__(x, self.h[-1], self.c[-1])
         self.c += cell_rets[0]
@@ -680,7 +686,7 @@ class LSTMLayer(jit.ScriptModule):
             self.lstm_inlets_activations['ig'] += cell_rets[3]
             self.lstm_inlets_activations['og'] += cell_rets[4]
             self.lstm_inlets_activations['fg'] += cell_rets[5]
-
+            
             # Set output after tickersteps as new final output
             last_h = self.h[-1]
         
@@ -700,7 +706,7 @@ class LSTMLayer(jit.ScriptModule):
             h_out = last_h
         
         return h_out, OrderedDict([('h', self.h), ('c', self.c)] + list(self.lstm_inlets_activations.items()))
-
+    
     def get_weights(self):
         """Return dictionaries for w_fwd and w_rec; These are views on the actual concatenated parameters;"""
         return self.w_fwd, self.w_rec
@@ -773,15 +779,15 @@ class LSTMLayer(jit.ScriptModule):
                     tsl = true_seq_len + 1
                 else:
                     tsl = true_seq_len
-                if key == 'input':
+                if key == 'input' or not self.n_tickersteps:
                     lstm_internals_copy[key] = lstm_internals_copy[key][:tsl]
                 else:
                     lstm_internals_copy[key] = np.concatenate((lstm_internals_copy[key][:tsl],
                                                                lstm_internals_copy[key][-self.n_tickersteps:]), axis=0)
-
+        
         plot_labels = [a for z in zip_longest(['input', 'h', 'c'], self.lstm_inlets) for a in z]
         max_len = max([v.shape[0] for v in lstm_internals_copy.values()])
-
+        
         #
         # Do plotting: 1 axis per LSTM internal
         #
