@@ -108,7 +108,7 @@ class LSTMCell(jit.ScriptModule):
         n_rec_features : int
             Number of recurrent input features (=number of LSTM blocks if feeding the LSTM output back as recurrence).
             Defaults to n_lstm.
-        w_ci, w_ig, w_og, w_fg : function or list of function or bool
+        w_ci, w_ig, w_og, w_fg : function or list of function or tuple of function or bool
             Initializer function(s) for respective weights;
             If 2-element list: Interpreted as [w_fwd, w_rec] to define different weight initializations for forward and
             recurrent connections respectively;
@@ -441,7 +441,7 @@ class LSTMLayer(jit.ScriptModule):
             Number of input features
         out_features : int
             Number of output features (=number of LSTM blocks)
-        w_ci, w_ig, w_og, w_fg : function or list of function or bool
+        w_ci, w_ig, w_og, w_fg : function or list of function or tuple of function or bool
             Initializer function(s) for respective weights;
             If 2-element list: Interpreted as [w_fwd, w_rec] to define different weight initializations for forward and
             recurrent connections respectively;
@@ -709,11 +709,11 @@ class LSTMLayer(jit.ScriptModule):
     
     def get_weights(self):
         """Return dictionaries for w_fwd and w_rec; These are views on the actual concatenated parameters;"""
-        return self.w_fwd, self.w_rec
+        return self.lstm_cell.w_fwd, self.lstm_cell.w_rec
     
     def get_biases(self):
         """Return dictionaries for with biases and """
-        return self.b
+        return self.lstm_cell.b
     
     def __tensor_to_numpy__(self, t):
         """Try to convert a tensor or numpy.ndarray t to a numpy.ndarray"""
