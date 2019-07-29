@@ -162,14 +162,15 @@ class SaverLoader(object):
             print(' done!')
     
     def load_from_file(self, loadname: str = None, verbose: bool = True):
-        """Load state from file
+        """Load state from saved file
         
-        Load state from a file loadname in directory self.save_dir or load newest saved file.
+        Load state from a file loadname in directory self.save_dir, from an external file, or load newest saved file.
         
         Parameters
         ----------
         loadname : str
-            Name or path of file to load from parent directory self.save_dir.
+            Name or path of file to load from.
+            Can be key to previously saved file (see get_saved_to_file()), or external filepath.
             If None, the newest saved file will be loaded.
         verbose : bool
             Verbose output
@@ -180,7 +181,11 @@ class SaverLoader(object):
         if verbose:
             print(f'  Loading checkpoint from file "{loadname}"...', end='')
         
-        load_dict = torch.load(self.saved_to_file[loadname])
+        try:
+            load_dict = torch.load(self.saved_to_file[loadname])
+        except KeyError:
+            load_dict = torch.load(loadname)
+        
         for k in self.save_dict.keys():
             if k not in load_dict.keys():
                 print(f"Warning: Could not load {k}!")

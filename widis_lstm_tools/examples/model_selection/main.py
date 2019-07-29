@@ -50,7 +50,7 @@ class Net(nn.Module):
             inputformat='NLC',  # Input format can be 'NLC' (samples, length, channels) or 'NCL'
             w_ci=(nn.init.normal_, False),  # cell input: weights to forward inputs (normal init)
             w_ig=(False, nn.init.normal_),  # input gate: weights to recurrent inputs (normal init)
-            w_og=(False, nn.init.normal_,),  # output gate: weights to recurrent inputs (normal init)
+            w_og=(False, nn.init.normal_),  # output gate: weights to recurrent inputs (normal init)
             a_out=lambda x: x,  # LSTM output activation shall be identity function
             b_ig=lambda *args, **kwargs: nn.init.normal_(mean=-5, *args, **kwargs),  # neg. input gate bias for long seq
             n_tickersteps=5,  # Optionally let LSTM do computations after sequence end, using tickersteps/tinkersteps
