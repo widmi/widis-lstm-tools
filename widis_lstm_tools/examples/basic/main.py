@@ -39,15 +39,36 @@ class Net(nn.Module):
         # Let's say we want an LSTM with forward connections to cell input and recurrent connections to input- and
         # output gate only; Furthermore we want a linear LSTM output activation instead of tanh:
         self.lstm1 = LSTMLayer(
-            n_input_features, n_lstm,
-            inputformat='NLC',  # Input format can be 'NLC' (samples, length, channels) or 'NCL'
-            w_ci=(nn.init.normal_, False),  # cell input: weights to forward inputs (normal init)
-            w_ig=(False, nn.init.normal_),  # input gate: weights to recurrent inputs (normal init)
-            w_og=(False, nn.init.normal_,),  # output gate: weights to recurrent inputs (normal init)
-            a_out=lambda x: x,  # LSTM output activation shall be identity function
-            b_ig=lambda *args, **kwargs: nn.init.normal_(mean=-5, *args, **kwargs),  # neg. input gate bias for long seq
-            n_tickersteps=5  # Optionally let LSTM do computations after sequence end, using tickersteps/tinkersteps
+            in_features=n_input_features, out_features=n_lstm,
+            # Possible input formats: 'NLC' (samples, length, channels) or 'NCL' (samples, channels, length)
+            inputformat='NLC',
+            # cell input: initialize weights to forward inputs with normal init, disable connections to recurrent inputs
+            w_ci=(nn.init.normal_, False),
+            # input gate: disable connections to forward inputs, initialize weights to recurrent inputs with normal init
+            w_ig=(False, nn.init.normal_),
+            # output gate: disable connections to forward inputs, initialize weights to recurrent inputs with norm. init
+            w_og=(False, nn.init.normal_),
+            # forget gate: disable all connection (=no forget gate)
+            w_fg=False,
+            # LSTM output activation shall be identity function
+            a_out=lambda x: x,
+            # Optionally use negative input gate bias for long sequences
+            b_ig=lambda *args, **kwargs: nn.init.normal_(mean=-5, *args, **kwargs),
+            # Optionally let LSTM do computations after sequence end, using tickersteps/tinkersteps
+            n_tickersteps=5,
         )
+        
+        # This would be a fully connected LSTM (cell input and gates connected to forward and recurrent connections)
+        # without tickersteps:
+        # self.lstm1 = LSTMLayer(
+        #     in_features=n_input_features, out_features=n_lstm,
+        #     inputformat='NLC',
+        #     w_ci=nn.init.normal_,  # equal to w_ci=(nn.init.normal_, nn.init.normal_)
+        #     w_ig=nn.init.normal_,
+        #     w_og=nn.init.normal_,
+        #     w_fg=nn.init.normal_,
+        #     a_out=lambda x: x
+        # )
         
         # After the LSTM layer, we add a fully connected output layer
         self.fc_out = nn.Linear(n_lstm, n_outputs)
