@@ -66,9 +66,9 @@ class LearningRateDecay(object):
 
 class LSTMCell(jit.ScriptModule):
     def __init__(self, n_fwd_features, n_lstm, n_rec_features=None,
-                 w_ci=nn.init.normal_, w_ig=nn.init.normal_, w_og=nn.init.normal_, w_fg=False,
+                 w_ci=nn.init.xavier_normal_, w_ig=nn.init.xavier_normal_, w_og=nn.init.xavier_normal_, w_fg=False,
                  b_ci=nn.init.normal_, b_ig=nn.init.normal_, b_og=nn.init.normal_, b_fg=False,
-                 a_ci=torch.tanh, a_ig=torch.sigmoid, a_og=torch.sigmoid, a_fg=lambda x: x, a_out=torch.tanh,
+                 a_ci=torch.tanh, a_ig=torch.sigmoid, a_og=torch.sigmoid, a_fg=torch.sigmoid, a_out=torch.tanh,
                  b_ci_tickers=nn.init.normal_, b_ig_tickers=nn.init.normal_, b_og_tickers=nn.init.normal_,
                  b_fg_tickers=False, dtype: torch.dtype = torch.float32):
         """Flexible LSTM cell supporting
@@ -97,7 +97,8 @@ class LSTMCell(jit.ScriptModule):
         
         Default: Forget gate disabled, other connections and biases enabled,
         tanh cell input and cell output activation function,
-        sigmoid gate activation functions, nn.init.normal_ initializer for weights and biases.
+        sigmoid gate activation functions, nn.init.xavier_normal_ initializer for weights and
+        nn.init.normal_ for biases.
         
         Parameters
         -------
@@ -108,7 +109,7 @@ class LSTMCell(jit.ScriptModule):
         n_rec_features : int
             Number of recurrent input features (=number of LSTM blocks if feeding the LSTM output back as recurrence).
             Defaults to n_lstm.
-        w_ci, w_ig, w_og, w_fg : function or list of function or tuple of function or bool
+        w_ci, w_ig, w_og, w_fg : function or list of function or tuple of function bool
             Initializer function(s) for respective weights;
             If 2-element list: Interpreted as [w_fwd, w_rec] to define different weight initializations for forward and
             recurrent connections respectively;
@@ -399,9 +400,9 @@ class LSTMCell(jit.ScriptModule):
 
 class LSTMLayer(jit.ScriptModule):
     def __init__(self, in_features, out_features,
-                 w_ci=nn.init.normal_, w_ig=nn.init.normal_, w_og=nn.init.normal_, w_fg=False,
+                 w_ci=nn.init.xavier_normal_, w_ig=nn.init.xavier_normal_, w_og=nn.init.xavier_normal_, w_fg=False,
                  b_ci=nn.init.normal_, b_ig=nn.init.normal_, b_og=nn.init.normal_, b_fg=False,
-                 a_ci=torch.tanh, a_ig=torch.sigmoid, a_og=torch.sigmoid, a_fg=lambda x: x, a_out=torch.tanh,
+                 a_ci=torch.tanh, a_ig=torch.sigmoid, a_og=torch.sigmoid, a_fg=torch.sigmoid, a_out=torch.tanh,
                  c_init=lambda t: nn.init.constant_(t, val=0).detach_(),
                  h_init=lambda t: nn.init.constant_(t, val=0).detach_(),
                  b_ci_tickers=nn.init.normal_, b_ig_tickers=nn.init.normal_, b_og_tickers=nn.init.normal_,
@@ -433,7 +434,8 @@ class LSTMLayer(jit.ScriptModule):
         
         Default: Forget gate disabled, other connections and biases enabled,
         tanh cell input and cell output activation function,
-        sigmoid gate activation functions, nn.init.normal_ initializer for weights and biases.
+        sigmoid gate activation functions, nn.init.xavier_normal_ initializer for weights and
+        nn.init.normal_ for biases.
         
         Parameters
         -------
@@ -480,7 +482,7 @@ class LSTMLayer(jit.ScriptModule):
         self.inputformat = inputformat
         
         # Check for valid input format
-        if self.inputformat != 'NLC' and self.inputformat != 'NCL':
+        if self.inputformat not in ['LNC', 'NLC', 'NCL']:
             raise ValueError("Input format {} not supported".format(self.inputformat))
         
         # Get LSTM cell
@@ -514,7 +516,12 @@ class LSTMLayer(jit.ScriptModule):
         self.x = None
         
         # Optimize function for input splitting for chosen input format
-        if self.inputformat == 'NLC':
+        if self.inputformat == 'LNC':
+            @torch.jit.script
+            def unbind_inputs(fwd_inputs):
+                fwd_inputs = fwd_inputs.unbind(dim=0)
+                return fwd_inputs
+        elif self.inputformat == 'NLC':
             @torch.jit.script
             def unbind_inputs(fwd_inputs):
                 fwd_inputs = fwd_inputs.unbind(dim=1)
@@ -537,6 +544,7 @@ class LSTMLayer(jit.ScriptModule):
         # Cell states and LSTM outputs at each timestep for each sample will be stored in a list
         self.c = [self.c_first.repeat((n_samples, 1))]
         self.h = [self.h_first.repeat((n_samples, 1))]
+        self.x = []
         
         # Activations of LSTM inlets at each timestep for each sample will be stored in a list
         self.lstm_inlets_activations = OrderedDict(zip(self.lstm_inlets, [[], [], [], []]))
@@ -557,12 +565,12 @@ class LSTMLayer(jit.ScriptModule):
             cell_rets = self.lstm_cell.cell(fwd_inputs[t], h_old, c_old)
             c_old = cell_rets[0]
             h_old = cell_rets[1]
-            c += c_old
-            h += h_old
-            ci += cell_rets[2]
-            ig += cell_rets[3]
-            og += cell_rets[4]
-            fg += cell_rets[5]
+            c.append(c_old)
+            h.append(h_old)
+            ci.append(cell_rets[2])
+            ig.append(cell_rets[3])
+            og.append(cell_rets[4])
+            fg.append(cell_rets[5])
         return c, h, ci, ig, og, fg
         
     @torch.jit.script_method
@@ -580,12 +588,12 @@ class LSTMLayer(jit.ScriptModule):
             cell_rets = self.lstm_cell.cell_tickersteps(h_old, c_old)
             c_old = cell_rets[0]
             h_old = cell_rets[1]
-            c += c_old
-            h += h_old
-            ci += cell_rets[2]
-            ig += cell_rets[3]
-            og += cell_rets[4]
-            fg += cell_rets[5]
+            c.append(c_old)
+            h.append(h_old)
+            ci.append(cell_rets[2])
+            ig.append(cell_rets[3])
+            og.append(cell_rets[4])
+            fg.append(cell_rets[5])
         
         return c, h, ci, ig, og, fg
     
@@ -631,9 +639,10 @@ class LSTMLayer(jit.ScriptModule):
                  cell input, input gate, output gate, and forget gate.
         """
         self.true_seq_lens = true_seq_lens
-        self.x = x
         
-        if self.inputformat == 'NLC':
+        if self.inputformat == 'LNC':
+            n_seqpos, n_samples, n_features = x.shape
+        elif self.inputformat == 'NLC':
             n_samples, n_seqpos, n_features = x.shape
         elif self.inputformat == 'NCL':
             n_samples, n_features, n_seqpos = x.shape
@@ -642,6 +651,8 @@ class LSTMLayer(jit.ScriptModule):
         
         if reset_state:
             self.__reset_lstm_internals__(n_samples=n_samples)
+        
+        self.x.append(x)
         
         # Calculate activations for LSTM inlets and append them to self.lstm_inlets_activations
         cell_rets = self.__apply_cell__(x, self.h[-1], self.c[-1])
@@ -695,7 +706,9 @@ class LSTMLayer(jit.ScriptModule):
         #
         if return_all_seq_pos:
             # Output is LSTM output at each position
-            if self.inputformat == 'NLC':
+            if self.inputformat == 'LNC':
+                h_out = torch.stack(self.h[1:], 0)
+            elif self.inputformat == 'NLC':
                 h_out = torch.stack(self.h[1:], 1)
             elif self.inputformat == 'NCL':
                 h_out = torch.stack(self.h[1:], 2)
@@ -763,11 +776,27 @@ class LSTMLayer(jit.ScriptModule):
         #
         # Get sample activations at mb_index
         #
-        lstm_internals_copy = OrderedDict([(k, self.__tensor_to_numpy__(torch.stack([t[mb_index] for t in v], 0)))
-                                           for k, v in self.lstm_inlets_activations.items() if v[0] is not 1])
-        lstm_internals_copy['c'] = self.__tensor_to_numpy__(torch.stack([t[mb_index] for t in self.c], 0))
-        lstm_internals_copy['h'] = self.__tensor_to_numpy__(torch.stack([t[mb_index] for t in self.h], 0))
-        lstm_internals_copy['input'] = self.__tensor_to_numpy__(self.x[mb_index])
+        if self.inputformat == 'LNC':
+            lstm_internals_copy = OrderedDict([(k, self.__tensor_to_numpy__(torch.stack([t[mb_index] for t in v], 0)))
+                                               for k, v in self.lstm_inlets_activations.items() if v[0] is not 1])
+            lstm_internals_copy['c'] = self.__tensor_to_numpy__(torch.stack([t[mb_index] for t in self.c], 0))
+            lstm_internals_copy['h'] = self.__tensor_to_numpy__(torch.stack([t[mb_index] for t in self.h], 0))
+            lstm_internals_copy['input'] = self.__tensor_to_numpy__(torch.cat([t[:, mb_index] for t in self.x], 0))
+        elif self.inputformat == 'NLC':
+            lstm_internals_copy = OrderedDict([(k, self.__tensor_to_numpy__(torch.stack([t[mb_index] for t in v], 0)))
+                                               for k, v in self.lstm_inlets_activations.items() if v[0] is not 1])
+            lstm_internals_copy['c'] = self.__tensor_to_numpy__(torch.stack([t[mb_index] for t in self.c], 0))
+            lstm_internals_copy['h'] = self.__tensor_to_numpy__(torch.stack([t[mb_index] for t in self.h], 0))
+            lstm_internals_copy['input'] = self.__tensor_to_numpy__(torch.cat([t[mb_index] for t in self.x], 0))
+        elif self.inputformat == 'NCL':
+            lstm_internals_copy = OrderedDict([(k, self.__tensor_to_numpy__(torch.stack([t[mb_index] for t in v], 0)))
+                                               for k, v in self.lstm_inlets_activations.items() if v[0] is not 1])
+            lstm_internals_copy['c'] = self.__tensor_to_numpy__(torch.stack([t[mb_index] for t in self.c], 0))
+            lstm_internals_copy['h'] = self.__tensor_to_numpy__(torch.stack([t[mb_index] for t in self.h], 0))
+            lstm_internals_copy['input'] = self.__tensor_to_numpy__(torch.cat([t[mb_index] for t in self.x], 1))
+            lstm_internals_copy['input'] = lstm_internals_copy['input'].permute(1, 0)
+        else:
+            raise ValueError("Input format {} not supported".format(self.inputformat))
         
         #
         # Remove activations between last true sequence position and start_time of tickersteps for padded sequences
@@ -802,13 +831,18 @@ class LSTMLayer(jit.ScriptModule):
                 label = plot_labels[i]
             except IndexError:
                 ax.axis('off')
+                ax.get_xaxis().set_visible(False)
+                ax.get_yaxis().set_visible(False)
                 continue
             ax.set_title(label)
             if label not in lstm_internals_copy.keys():
                 continue
             
-            _ = ax.plot(lstm_internals_copy[label], label=label)
-            ax.set_xlim(left=0, right=max_len)
+            if label == 'c' or label == 'h':
+                _ = ax.plot(np.arange(len(lstm_internals_copy[label])) - 1, lstm_internals_copy[label], label=label)
+            else:
+                _ = ax.plot(lstm_internals_copy[label], label=label)
+            ax.set_xlim(left=-1, right=max_len)
             ax.grid(True)
         
         if filename is not None:
