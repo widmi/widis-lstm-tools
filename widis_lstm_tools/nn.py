@@ -549,7 +549,7 @@ class LSTMLayer(jit.ScriptModule):
         # Activations of LSTM inlets at each timestep for each sample will be stored in a list
         self.lstm_inlets_activations = OrderedDict(zip(self.lstm_inlets, [[], [], [], []]))
     
-    @torch.jit.script_method
+    # @torch.jit.script_method
     def __apply_cell__(self, fwd_inputs, h_old, c_old):
         """Apply LSTM cell to a sequence"""
         fwd_inputs = self.unbind_inputs(fwd_inputs)
@@ -573,7 +573,7 @@ class LSTMLayer(jit.ScriptModule):
             fg.append(cell_rets[5])
         return c, h, ci, ig, og, fg
         
-    @torch.jit.script_method
+    # @torch.jit.script_method
     def __apply_cell_tickersteps__(self, tickersteps, h_old, c_old):
         """Apply LSTM cell to a sequence during tickersteps"""
         c = torch.jit.annotate(List[torch.Tensor], [])
