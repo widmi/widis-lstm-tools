@@ -70,10 +70,10 @@ class Net(nn.Module):
         # self.lstm1 = LSTMLayer(
         #     in_features=n_input_features, out_features=n_lstm,
         #     inputformat='NLC',
-        #     w_ci=nn.init.normal_,  # equal to w_ci=(nn.init.normal_, nn.init.normal_)
-        #     w_ig=nn.init.normal_,
-        #     w_og=nn.init.normal_,
-        #     w_fg=nn.init.normal_,
+        #     w_ci=nn.init.xavier_normal_, b_ci=nn.init.normal_, # equal to w_ci=(nn.init.normal_, nn.init.normal_)
+        #     w_ig=nn.init.xavier_normal_, b_ig=nn.init.normal_,
+        #     w_og=nn.init.xavier_normal_, b_og=nn.init.normal_,
+        #     w_fg=nn.init.xavier_normal_, b_fg=nn.init.normal_,
         #     a_out=lambda x: x
         # )
         
@@ -82,10 +82,10 @@ class Net(nn.Module):
     
     def forward(self, x, true_seq_lens):
         # We only need the output of the LSTM; We get format (samples, n_lstm) since we set return_all_seq_pos=False:
-        lstm_out, *_ = self.lstm1(x,
-                                  true_seq_lens=true_seq_lens,  # true sequence lengths of padded sequences
-                                  return_all_seq_pos=False   # return predictions for last sequence positions only
-                                  )
+        lstm_out, *_ = self.lstm1.forward(x,
+                                          true_seq_lens=true_seq_lens,  # true sequence lengths of padded sequences
+                                          return_all_seq_pos=False   # return predictions for last sequence position
+                                          )
         net_out = self.fc_out(lstm_out)
         return net_out
 
