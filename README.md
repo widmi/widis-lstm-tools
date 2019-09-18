@@ -59,4 +59,9 @@ Run the more advanced example via
    - [Pytorch](https://pytorch.org/) (tested with version 1.1.0)
    - [numpy](https://www.numpy.org/) (tested with version 1.16.2)
    - [matplotlib](https://matplotlib.org/) (tested with version 3.0.3)
-   
+
+<br/><br/>
+I wish you the best for your work with LSTM!
+
+-- Michael W. (widi)
+
