@@ -1,4 +1,4 @@
-# widis-lstm-tools v0.2
+# widis-lstm-tools v0.3
 
 Various Tools for working with Long Short-Term Memory (LSTM) networks and sequences in [Pytorch](https://pytorch.org/),
 aimed at getting your LSTM networks under control and providing a flexible template for your LSTM-needs.
@@ -11,6 +11,18 @@ You can directly install the package from GitHub using the command below:
 
 ```bash
 pip install git+https://github.com/widmi/widis-lstm-tools
+```
+
+To update your installation with or without dependencies, you can use:
+
+```bash
+pip install --upgrade git+https://github.com/widmi/widis-lstm-tools
+```
+
+or
+
+```bash
+pip install --no-dependencies --upgrade git+https://github.com/widmi/widis-lstm-tools
 ```
 
 Run the simple example via
@@ -27,7 +39,7 @@ Run the more advanced example via
   - Easy access to individual forward and recurrent LSTM connections and biases, with options to cut/modify individual connections to gates or cell input (see e.g. https://arxiv.org/abs/1503.04069 for some useful modifications)
   - Plotting function for LSTM internal states
   - Support for Ticker/Tinker-Steps at the end of the sequence (https://arxiv.org/abs/1603.08983)
-  - Automatic optimizations via [TorchScript](https://pytorch.org/docs/stable/jit.html)
+  - Automatic optimizations via [TorchScript](https://pytorch.org/docs/stable/jit.html) (loop optimization currently disabled due to gradient issues)
 - Preprocessing tools
   - [Padding of different sequence lengths](widis_lstm_tools/preprocessing.py#L108)
   - [Encoding for nicely feeding float or integer numbers as inputs to the LSTM](widis_lstm_tools/preprocessing.py#L229)

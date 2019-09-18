@@ -40,16 +40,16 @@ class Net(nn.Module):
         # output gate only; Furthermore we want a linear LSTM output activation instead of tanh:
         self.lstm1 = LSTMLayer(
             in_features=n_input_features, out_features=n_lstm,
-            # Possible input formats: 'NLC' (samples, length, channels) or 'NCL' (samples, channels, length)
+            # Possible input formats: 'NLC' (samples, length, channels), 'NCL', or 'LNC'
             inputformat='NLC',
-            # cell input: initialize weights to forward inputs with normal init, disable connections to recurrent inputs
-            w_ci=(nn.init.normal_, False),
-            # input gate: disable connections to forward inputs, initialize weights to recurrent inputs with normal init
-            w_ig=(False, nn.init.normal_),
-            # output gate: disable connections to forward inputs, initialize weights to recurrent inputs with norm. init
-            w_og=(False, nn.init.normal_),
-            # forget gate: disable all connection (=no forget gate)
-            w_fg=False,
+            # cell input: initialize weights to forward inputs with xavier, disable connections to recurrent inputs
+            w_ci=(nn.init.xavier_normal_, False),
+            # input gate: disable connections to forward inputs, initialize weights to recurrent inputs with xavier
+            w_ig=(False, nn.init.xavier_normal_),
+            # output gate: disable connections to forward inputs, initialize weights to recurrent inputs with xavier
+            w_og=(False, nn.init.xavier_normal_),
+            # forget gate: disable all connection (=no forget gate) and bias
+            w_fg=False, b_fg=False,
             # LSTM output activation shall be identity function
             a_out=lambda x: x,
             # Optionally use negative input gate bias for long sequences

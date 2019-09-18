@@ -7,7 +7,7 @@ install_requires = requirements["install"]
 setup(
     # Metadata
     name="widis-lstm-tools",
-    version="0.2",
+    version="0.3",
     author="Michael Widrich",
     author_email="widrich@ml.jku.at",
     url="https://github.com/widmi/widis-lstm-tools",
