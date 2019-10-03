@@ -1,4 +1,4 @@
-# widis-lstm-tools v0.3
+# widis-lstm-tools v0.4
 
 Various Tools for working with Long Short-Term Memory (LSTM) networks and sequences in [Pytorch](https://pytorch.org/),
 aimed at getting your LSTM networks under control and providing a flexible template for your LSTM-needs.
@@ -13,13 +13,13 @@ You can directly install the package from GitHub using the command below:
 pip install git+https://github.com/widmi/widis-lstm-tools
 ```
 
-To update your installation with or without dependencies, you can use:
+To update your installation with dependencies, you can use:
 
 ```bash
 pip install --upgrade git+https://github.com/widmi/widis-lstm-tools
 ```
 
-or
+To update your installation without dependencies, you can use:
 
 ```bash
 pip install --no-dependencies --upgrade git+https://github.com/widmi/widis-lstm-tools
@@ -35,11 +35,13 @@ Run the more advanced example via
 
 ## Includes
 
-- Flexible [LSTM Cell](widis_lstm_tools/nn.py#L67) and [LSTM Layer](widis_lstm_tools/nn.py#L394) implementation including
+- Flexible [LSTMCell](widis_lstm_tools/nn.py#L67) and [LSTMLayer](widis_lstm_tools/nn.py#L724) implementation including
   - Easy access to individual forward and recurrent LSTM connections and biases, with options to cut/modify individual connections to gates or cell input (see e.g. https://arxiv.org/abs/1503.04069 for some useful modifications)
   - Plotting function for LSTM internal states
   - Support for Ticker/Tinker-Steps at the end of the sequence (https://arxiv.org/abs/1603.08983)
-  - Automatic optimizations via [TorchScript](https://pytorch.org/docs/stable/jit.html) (loop optimization currently disabled due to gradient issues)
+  - Automatic optimizations via [TorchScript](https://pytorch.org/docs/stable/jit.html) 
+  (use classes [LSTMCellTorchScript](widis_lstm_tools/nn.py#L389) or [LSTMLayerTorchScript](widis_lstm_tools/nn.py#L1190) 
+  for TorchScript optimization. Loop optimization might cause issues with gradient - use only for inference.)
 - Preprocessing tools
   - [Padding of different sequence lengths](widis_lstm_tools/preprocessing.py#L108)
   - [Encoding for nicely feeding float or integer numbers as inputs to the LSTM](widis_lstm_tools/preprocessing.py#L229)
