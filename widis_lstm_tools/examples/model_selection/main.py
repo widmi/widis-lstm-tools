@@ -55,7 +55,7 @@ class Net(nn.Module):
             w_ig=(False, nn.init.xavier_normal_),
             # output gate: disable connections to forward inputs, initialize weights to recurrent inputs with xavier
             w_og=(False, nn.init.xavier_normal_),
-            # forget gate: disable all connection (=no forget gate) and bias
+            # forget gate: disable all connections (=no forget gate) and bias
             w_fg=False, b_fg=False,
             # LSTM output activation shall be identity function
             a_out=lambda x: x,
