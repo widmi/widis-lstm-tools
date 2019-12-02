@@ -6,8 +6,8 @@ Scenario: LSTM network for predicting 1 label per sequence.
 Input: Command line argument with path to config file 'config.json'.
 Output: Output files will be saved in the output folder specified in 'config.json'.
 
-Dataset: Dataset 'RandomOrSigmoidal' gives us sequences that need to be classified into random uniform signal or
-sigmoidal signals.
+Dataset: Dataset 'RandomOrSine' gives us sequences that need to be classified into random uniform signal or
+sine signals.
 Sequences have different lengths, so we need to use widis_lstm_tools.preprocessing.PadToEqualLengths for padding.
 Config: Setup is done via config file 'config.json'.
 
@@ -28,7 +28,7 @@ import torch.optim as optim
 from widis_lstm_tools.nn import LSTMLayer, LearningRateDecay
 from widis_lstm_tools.utils.config_tools import get_config
 from widis_lstm_tools.preprocessing import PadToEqualLengths
-from widis_lstm_tools.examples.basic.dataset import RandomOrSigmoidal
+from widis_lstm_tools.examples.basic.dataset import RandomOrSine
 from widis_lstm_tools.measures import bacc
 from widis_lstm_tools.utils.collection import TeePrint, close_all
 
@@ -99,8 +99,8 @@ def main():
     device = torch.device(config['device'])  # e.g. "cpu" or "cuda:0"
     
     # Get datasets
-    trainset = RandomOrSigmoidal(n_samples=config['n_trainingset_samples'])
-    testset = RandomOrSigmoidal(n_samples=config['n_testset_samples'])
+    trainset = RandomOrSine(n_samples=config['n_trainingset_samples'])
+    testset = RandomOrSine(n_samples=config['n_testset_samples'])
     
     # Set up sequence padding
     padder = PadToEqualLengths(

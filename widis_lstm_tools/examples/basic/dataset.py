@@ -10,21 +10,21 @@ import numpy as np
 from torch.utils.data import Dataset
 
 
-class RandomOrSigmoidal(Dataset):
+class RandomOrSine(Dataset):
     def __init__(self, n_samples: int, min_seq_len: int = 10, max_seq_len: int = 100):
-        """Sequences need to be classified into random uniform signal or sigmoidal signal
+        """Sequences need to be classified into random uniform signal or sine signal
         
-        Dataset with sequences of different lengths containing a random uniform signal or a sigmoidal signal.
+        Dataset with sequences of different lengths containing a random uniform signal or a sine signal.
         
         Samples will be of shape (sequence, label, ID) with
         sequences: np.array
             Sequence of shape (seq_len, features)
         label: int
-            Label (0=random signal, 1=sigmoidal signal)
+            Label (0=random signal, 1=sine signal)
         ID: str
             ID of sample
         """
-        super(RandomOrSigmoidal, self).__init__()
+        super(RandomOrSine, self).__init__()
         
         self.n_samples = int(n_samples)
         self.min_seq_len = int(min_seq_len)
@@ -33,9 +33,9 @@ class RandomOrSigmoidal(Dataset):
         self.n_classes = 2
         
         self.labels = np.random.randint(low=0, high=2, size=(self.n_samples,))
-        self.sequences = [self.__make_random__() if label == 0 else self.__make_sigmoidal__() for label in self.labels]
+        self.sequences = [self.__make_random__() if label == 0 else self.__make_sine__() for label in self.labels]
     
-    def __make_sigmoidal__(self):
+    def __make_sine__(self):
         start_end = np.random.uniform(low=0, high=np.pi*self.max_seq_len, size=(2,))
         start_end.sort()
         sequence = np.linspace(start=start_end[0], stop=start_end[1],

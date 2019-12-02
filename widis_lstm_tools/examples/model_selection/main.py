@@ -13,7 +13,7 @@ Input: Command line argument with path to config file 'config.json'.
 Output: Output files will be saved in the output folder specified in 'config.json'.
 
 Dataset: Dataset 'RandomOrSineEncoded' gives us sequences that need to be classified into random uniform signal or
-sigmoidal signals.
+sine signals.
 Sequences have different lengths, so we need to use widis_lstm_tools.preprocessing.PadToEqualLengths for padding.
 Values in sequences are encoded in 16 input features, so a sequence will have shape (seq_len, 16).
 Config: Setup is done via config file 'config.json'.
@@ -35,7 +35,7 @@ import torch.optim as optim
 from widis_lstm_tools.nn import LSTMLayer, LearningRateDecay
 from widis_lstm_tools.utils.config_tools import get_config
 from widis_lstm_tools.preprocessing import PadToEqualLengths, random_dataset_split
-from widis_lstm_tools.examples.model_selection.dataset import RandomOrSigmoidalEncoded
+from widis_lstm_tools.examples.model_selection.dataset import RandomOrSineEncoded
 from widis_lstm_tools.measures import bacc
 from widis_lstm_tools.utils.collection import TeePrint, SaverLoader, close_all
 
@@ -107,7 +107,7 @@ def main():
     device = torch.device(config['device'])  # e.g. "cpu" or "cuda:0"
     
     # Get dataset and split it into training-, validation-, and testset
-    full_dataset = RandomOrSigmoidalEncoded(n_samples=config['n_samples'])
+    full_dataset = RandomOrSineEncoded(n_samples=config['n_samples'])
     training_set, validation_set, test_set = random_dataset_split(dataset=full_dataset, split_sizes=(3/5., 1/5., 1/5.),
                                                                   rnd_seed=config['rnd_seed'])
     
