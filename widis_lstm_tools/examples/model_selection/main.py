@@ -187,8 +187,8 @@ def main():
     # Start training
     #
     tprint("# settings: {}".format(config))
+    running_loss = []
     while update < config['n_updates']:
-        running_loss = 0.
         start_time = time.time()
         for data in training_set_loader:
             
@@ -213,15 +213,14 @@ def main():
             update += 1
             
             # Update running losses for our statistic
-            running_loss += loss.item() if hasattr(loss, 'item') else loss
+            running_loss.append(loss.item() if hasattr(loss, 'item') else loss)
+            running_loss = running_loss[-10:]  # keep last 10 losses for averaging
             
             # Print current status and score
             if update % config['print_stats_at'] == 0 and update > 0:
                 run_time = (time.time() - start_time) / config['print_stats_at']
-                running_loss /= config['print_stats_at']
-                tprint(f"[train] u: {update:07d}; loss: {running_loss:8.7f}; "
+                tprint(f"[train] u: {update:07d}; loss: {np.mean(running_loss):8.7f}; "
                        f"sec/update: {run_time:8.7f};lr: {lr:8.7f}")
-                running_loss = 0.
                 start_time = time.time()
             
             # Do some plotting using the LSTMLayer plotting function
