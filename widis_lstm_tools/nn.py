@@ -767,7 +767,7 @@ class LSTMLayer(nn.Module):
             Number of input features
         out_features : int
             Number of output features (=number of LSTM blocks)
-        w_ci, w_ig, w_og, w_fg : function or list of function or tuple of function or bool
+        w_ci, w_ig, w_og, w_fg : function or list of function or tuple of function or tuple of bool or bool
             Initializer function(s) for respective weights;
             If 2-element list: Interpreted as [w_fwd, w_rec] to define different weight initializations for forward and
             recurrent connections respectively;
